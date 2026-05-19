@@ -1,11 +1,3 @@
-//==================================================================================
-// BSD 2-Clause License
-//
-// Copyright (c) 2025, Duality Technologies Inc. and other contributors
-//
-// All rights reserved.
-//==================================================================================
-
 #pragma once
 
 #include "math/hermite.h"

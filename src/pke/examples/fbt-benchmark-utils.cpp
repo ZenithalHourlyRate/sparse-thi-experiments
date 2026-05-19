@@ -1,11 +1,3 @@
-//==================================================================================
-// BSD 2-Clause License
-//
-// Copyright (c) 2025, Duality Technologies Inc. and other contributors
-//
-// All rights reserved.
-//==================================================================================
-
 #include "fbt-benchmark-utils.h"
 
 #include <iomanip>
