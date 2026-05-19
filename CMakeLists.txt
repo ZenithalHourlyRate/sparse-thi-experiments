@@ -29,7 +29,7 @@ project (OpenFHE C CXX)
 
 set(OPENFHE_VERSION_MAJOR 1)
 set(OPENFHE_VERSION_MINOR 5)
-set(OPENFHE_VERSION_PATCH 1)
+set(OPENFHE_VERSION_PATCH 0)
 set(OPENFHE_VERSION ${OPENFHE_VERSION_MAJOR}.${OPENFHE_VERSION_MINOR}.${OPENFHE_VERSION_PATCH})
 
 set(CMAKE_CXX_STANDARD 17)
@@ -88,11 +88,13 @@ option(WITH_BE2 "Include MATHBACKEND 2 in build by setting WITH_BE2 to ON"      
 option(WITH_BE4 "Include MATHBACKEND 4 in build by setting WITH_BE4 to ON"             OFF )
 option(WITH_NTL "Include MATHBACKEND 6 and NTL in build by setting WITH_NTL to ON"     OFF )
 option(WITH_TCM "Activate tcmalloc by setting WITH_TCM to ON"                          OFF )
-option(WITH_NATIVEOPT "Use machine-specific optimizations"                             OFF )
+option(WITH_NATIVEOPT "Use machine-specific optimizations"                             ON  )
 option(WITH_COVTEST "Turn on to enable coverage testing (can be used with g++ only)"   OFF )
 option(WITH_NOISE_DEBUG "Use only when running lattice estimator; not for production"  OFF )
 option(WITH_REDUCED_NOISE "Enable reduced noise within HKS and BFV HPSPOVERQ modes"    OFF )
 option(USE_MACPORTS "Use MacPorts installed packages"                                  OFF )
+option(WITH_INTEL_HEXL "Use Intel HEXL library"                                        ON  )
+option(INTEL_HEXL_PREBUILT "Specify if Intel HEXL library was prebuilt"                OFF )
 
 # Set required number of bits for native integer in build by setting NATIVE_SIZE to 64 or 128
 if(NOT NATIVE_SIZE)
@@ -101,6 +103,10 @@ endif()
 
 if(NOT CKKS_M_FACTOR)
     set(CKKS_M_FACTOR 1)
+endif()
+
+if(NOT INTEL_HEXL_HINT_DIR)
+    set(INTEL_HEXL_HINT_DIR "${CMAKE_INSTALL_PREFIX}")
 endif()
 
 # Print options
@@ -123,6 +129,9 @@ message(STATUS "WITH_COVTEST:       ${WITH_COVTEST}")
 message(STATUS "WITH_NOISE_DEBUG:   ${WITH_NOISE_DEBUG}")
 message(STATUS "WITH_REDUCED_NOISE: ${WITH_REDUCED_NOISE}")
 message(STATUS "USE_MACPORTS:       ${USE_MACPORTS}")
+message(STATUS "WITH_INTEL_HEXL:     ${WITH_INTEL_HEXL}")
+message(STATUS "INTEL_HEXL_PREBUILT: ${INTEL_HEXL_PREBUILT}")
+message(STATUS "INTEL_HEXL_HINT_DIR: ${INTEL_HEXL_HINT_DIR}")
 
 #--------------------------------------------------------------------
 # Compiler logic
@@ -620,6 +629,10 @@ include(ExternalProject)
 set(THIRDPARTYDIR ${CMAKE_CURRENT_SOURCE_DIR}/third-party)
 include_directories(${THIRDPARTYDIR}/include)
 
+if(WITH_INTEL_HEXL)
+    include(third-party/intel-hexl/intel-hexl.cmake)
+endif()
+
 include_directories(${THIRDPARTYDIR}/cereal/include)
 install(DIRECTORY ${THIRDPARTYDIR}/cereal/include/ DESTINATION include/openfhe)
 
@@ -718,6 +731,11 @@ if(WITH_NTL)
     list(APPEND THIRDPARTYLIBS "gmp")
     list(APPEND THIRDPARTYSTATICLIBS "ntl")
     list(APPEND THIRDPARTYSTATICLIBS "gmp")
+endif()
+
+if(WITH_INTEL_HEXL)
+    list(APPEND THIRDPARTYLIBS "HEXL::hexl")
+    list(APPEND THIRDPARTYSTATICLIBS "HEXL::hexl")
 endif()
 
 set(DEMODATAPATH ${CMAKE_CURRENT_SOURCE_DIR}/demoData)

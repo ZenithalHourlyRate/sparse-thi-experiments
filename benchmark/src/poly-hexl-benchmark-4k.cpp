@@ -1,7 +1,7 @@
 //==================================================================================
 // BSD 2-Clause License
 //
-// Copyright (c) 2014-2023, NJIT, Duality Technologies Inc. and other contributors
+// Copyright (c) 2014-2024, NJIT, Duality Technologies Inc. and other contributors
 //
 // All rights reserved.
 //
@@ -29,41 +29,25 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //==================================================================================
 
-#ifndef __NATIVEINTBACKEND_H__
-#define __NATIVEINTBACKEND_H__
+/*
+ * This code benchmarks polynomial operations for ring dimension of 4k.
+ */
 
-#include "config_core.h"
 #include "math/hal/basicint.h"
+#include "poly-benchmark.h"
+#include <iostream>
 
-#ifdef WITH_INTEL_HEXL
+constexpr uint32_t RING_DIM_LOG = 12;
+constexpr uint32_t DCRTBITS     = 50;
 
-    #include "math/hal/intnat-hexl/ubintnathexl.h"
-    #include "math/hal/intnat-hexl/mubintvecnathexl.h"
-    #include "math/hal/intnat-hexl/transformnathexl.h"
+class Setup {
+public:
+    Setup() {
+        std::cerr << "Generating polynomials for the benchmark..." << std::endl;
+        GeneratePolys((1 << (RING_DIM_LOG + 1)), DCRTBITS, NativepolysEval, NativepolysCoef);
+        GenerateDCRTPolys((1 << (RING_DIM_LOG + 1)), DCRTBITS, DCRTpolysEval, DCRTpolysCoef);
+        std::cerr << "Polynomials for the benchmark are generated" << std::endl;
+    }
+} TestParameters;
 
-namespace lbcrypto {
-
-using NativeInteger = intnathexl::NativeInteger;
-using NativeVector  = intnathexl::NativeVector;
-
-}  // namespace lbcrypto
-
-#else
-
-    #include "math/hal/intnat/ubintnat.h"
-    #include "math/hal/intnat/mubintvecnat.h"
-    #include "math/hal/intnat/transformnat.h"
-
-namespace lbcrypto {
-
-using NativeInteger = intnat::NativeInteger;
-using NativeVector  = intnat::NativeVector;
-
-}  // namespace lbcrypto
-
-#endif
-
-using NativeInteger = lbcrypto::NativeInteger;
-using NativeVector  = lbcrypto::NativeVector;
-
-#endif
+BENCHMARK_MAIN();

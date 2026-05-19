@@ -1,7 +1,7 @@
 //==================================================================================
 // BSD 2-Clause License
 //
-// Copyright (c) 2014-2023, NJIT, Duality Technologies Inc. and other contributors
+// Copyright (c) 2014-2024, NJIT, Duality Technologies Inc. and other contributors
 //
 // All rights reserved.
 //
@@ -29,12 +29,74 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //==================================================================================
 
-/*
-  Defines aliases for the lattice default backend
- */
-
 #ifndef LBCRYPTO_INC_LATTICE_HAL_LAT_BACKEND_H
 #define LBCRYPTO_INC_LATTICE_HAL_LAT_BACKEND_H
+
+#include "config_core.h"
+#ifdef WITH_INTEL_HEXL
+
+#define ILPARAMS_IMPLEMENTATION     "lattice/hal/default/ilparams.h"
+#define ILDCRTPARAMS_IMPLEMENTATION "lattice/hal/default/ildcrtparams.h"
+#define POLY_IMPLEMENTATION         "lattice/hal/hexl/hexlpoly-impl.h"
+#define DCRTPOLY_IMPLEMENTATION     "lattice/hal/hexl/hexldcrtpoly-impl.h"
+
+#define MAKE_ILPARAMS_TYPE(T)     template class ILParamsImpl<T>;
+#define MAKE_ILDCRTPARAMS_TYPE(T) template class ILDCRTParams<T>;
+#define MAKE_POLY_TYPE(T)         template class HexlPolyImpl<T>;
+#define MAKE_DCRTPOLY_TYPE(T)     template class HexlDCRTPolyImpl<T>;
+
+#include "lattice/hal/default/ilparams.h"
+#include "lattice/hal/default/ildcrtparams.h"
+#include "lattice/hal/hexl/hexlpoly.h"
+#include "lattice/hal/hexl/hexldcrtpoly.h"
+
+namespace lbcrypto {
+
+using ILNativeParams = ILParamsImpl<NativeInteger>;
+using ILParams       = ILParamsImpl<BigInteger>;
+using Poly           = HexlPolyImpl<BigVector>;
+using NativePoly     = HexlPolyImpl<NativeVector>;
+using DCRTPoly       = HexlDCRTPolyImpl<BigVector>;
+
+#ifdef WITH_BE2
+using M2Params     = ILParamsImpl<M2Integer>;
+using M2DCRTParams = ILDCRTParams<M2Integer>;
+using M2Poly       = HexlPolyImpl<M2Vector>;
+using M2DCRTPoly   = HexlDCRTPolyImpl<M2Vector>;
+#else
+using M2Params     = void;
+using M2DCRTParams = void;
+using M2Poly       = void;
+using M2DCRTPoly   = void;
+#endif
+
+#ifdef WITH_BE4
+using M4Params     = ILParamsImpl<M4Integer>;
+using M4DCRTParams = ILDCRTParams<M4Integer>;
+using M4Poly       = HexlPolyImpl<M4Vector>;
+using M4DCRTPoly   = HexlDCRTPolyImpl<M4Vector>;
+#else
+using M4Params     = void;
+using M4DCRTParams = void;
+using M4Poly       = void;
+using M4DCRTPoly   = void;
+#endif
+
+#ifdef WITH_NTL
+using M6Params     = ILParamsImpl<M6Integer>;
+using M6DCRTParams = ILDCRTParams<M6Integer>;
+using M6Poly       = HexlPolyImpl<M6Vector>;
+using M6DCRTPoly   = HexlDCRTPolyImpl<M6Vector>;
+#else
+using M6Params     = void;
+using M6DCRTParams = void;
+using M6Poly       = void;
+using M6DCRTPoly   = void;
+#endif
+
+}  // namespace lbcrypto
+
+#else
 
 #define ILPARAMS_IMPLEMENTATION     "lattice/hal/default/ilparams.h"
 #define ILDCRTPARAMS_IMPLEMENTATION "lattice/hal/default/ildcrtparams.h"
@@ -96,5 +158,7 @@ using M6DCRTPoly   = void;
 #endif
 
 }  // namespace lbcrypto
+
+#endif
 
 #endif

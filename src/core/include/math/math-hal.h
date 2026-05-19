@@ -36,6 +36,9 @@
 #ifndef LBCRYPTO_INC_MATH_HAL_H
 #define LBCRYPTO_INC_MATH_HAL_H
 
+#define HEXL_ADD_ENABLE 0
+#define HEXL_MUL_ENABLE 1
+
 // use of MS VC is not permitted because of various incompatibilities
 #ifdef _MSC_VER
     #error "MSVC COMPILER IS NOT SUPPORTED"
@@ -55,11 +58,22 @@ using BigVector  = bigintbackend::BigVector;
 }  // namespace lbcrypto
 
 //==============================================================================================
-// TODO: total hack ... move this!!!!!
+
+#ifdef WITH_INTEL_HEXL
+
+template <typename VecType>
+using NatChineseRemainderTransformFTT = intnathexl::ChineseRemainderTransformFTTNat<VecType>;
+template <typename VecType>
+using NatChineseRemainderTransformArb = intnathexl::ChineseRemainderTransformArbNat<VecType>;
+
+#else
+
 template <typename VecType>
 using NatChineseRemainderTransformFTT = intnat::ChineseRemainderTransformFTTNat<VecType>;
 template <typename VecType>
 using NatChineseRemainderTransformArb = intnat::ChineseRemainderTransformArbNat<VecType>;
+
+#endif
 
 //==============================================================================================
 
