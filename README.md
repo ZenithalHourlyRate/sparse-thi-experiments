@@ -1,10 +1,22 @@
 Installation and Running instructions
 =====================================
 
+## Implementation
+
+Go to <https://anonymous.4open.science/r/ac-81-5008/src/core/lib/math/hermite.cpp> for implementations of different Trigonometric Hermite Interpolation methods.
+
 ## Installation
 
 ```bash
+# Dependencies
+sudo apt install build-essential git libntl-dev libgmp-dev cmake autoconf libtool clang libomp5 libomp-dev
+
 # assuming the repo has been downloaded and we are in the root folder of the repo
+# Populate submodules
+git init; git add .; git commit -m "Initial commit"
+bash restore_submodule.sh
+
+# Build instructions
 mkdir build; cd build
 CC=clang CXX=clang++ cmake -DWITH_INTEL_HEXL=ON -DINTEL_HEXL_HINT_DIR=$PWD/install -DCMAKE_INSTALL_PREFIX=$PWD/install -DMATHBACKEND=6 -DWITH_NTL=ON -DWITH_TCM=ON ..
 make -j tcm
