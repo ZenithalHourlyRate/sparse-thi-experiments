@@ -1560,6 +1560,12 @@ protected:
     std::shared_ptr<FHEBase<Element>> m_FHE;
     std::shared_ptr<FHEBase<Element>> m_SchemeSwitch;
 
+public:
+    std::shared_ptr<AdvancedSHEBase<Element>> CustomGetAdvancedSHE() const {
+        return m_AdvancedSHE;
+    }
+
+protected:
     inline void CheckMultipartyDecryptCompatibility(ConstCiphertext<Element>& ciphertext, CALLER_INFO_ARGS_HDR) const {
         if (ciphertext->NumberCiphertextElements() > 2) {
             std::string errorMsg(std::string("ciphertext's number of elements is [") +

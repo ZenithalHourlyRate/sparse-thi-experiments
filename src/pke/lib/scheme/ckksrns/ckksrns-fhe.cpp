@@ -36,8 +36,10 @@
 #include "lattice/lat-hal.h"
 #include "math/hal/basicint.h"
 #include "math/dftransform.h"
+#include "scheme/ckksrns/ckksrns-advancedshe.h"
 #include "scheme/ckksrns/ckksrns-cryptoparameters.h"
 #include "scheme/ckksrns/ckksrns-fhe.h"
+#include "scheme/ckksrns/ckksrns-leveledshe.h"
 #include "scheme/ckksrns/ckksrns-utils.h"
 #include "schemebase/base-scheme.h"
 #include "utils/exception.h"
@@ -58,11 +60,59 @@
 #include <utility>
 #include <vector>
 
+double __debug(lbcrypto::ConstCiphertext<lbcrypto::DCRTPoly> ct, std::string msg) __attribute__((weak));
+
+double __debug(lbcrypto::ConstCiphertext<lbcrypto::DCRTPoly> ct, std::string msg) {
+    return 0.0;
+}
+
+lbcrypto::InterpolationMethod __interpolation_method_global __attribute__((weak)) = lbcrypto::HERMITE_INVALID;
+uint32_t __eval_exp_degree_global __attribute__((weak))                           = 0;
+bool __complex_lut_global __attribute__((weak))                                   = false;
+
 #ifdef BOOTSTRAPTIMING
     #define PROFILE
 #endif
 
 namespace {
+
+uint32_t GetPInputFromDigitBitSize(uint32_t digitBitSize) {
+    if (digitBitSize >= 31)
+        OPENFHE_THROW("Unsupported FBT input digit size for complex LUT coefficient layout.");
+    return 1U << digitBitSize;
+}
+
+size_t GetAKPComplexLUTBlockSize(uint32_t p, size_t order) {
+    switch (order) {
+        case 1:
+            return p;
+        case 2:
+            return p + (p >> 1) + 1;
+        case 3:
+            return 2 * p;
+        default:
+            return 0;
+    }
+}
+
+size_t GetSparseTHIComplexLUTBlockSize(uint32_t p, size_t order) {
+    if (order == 0)
+        return 0;
+    return ((2 * order + 1) * p) / 2 + 1;
+}
+
+bool IsComplexLUTAKPCoefficientLayout(size_t coefficientCount, uint32_t digitBitSize, size_t order) {
+    uint32_t p       = GetPInputFromDigitBitSize(digitBitSize);
+    size_t blockSize = GetAKPComplexLUTBlockSize(p, order);
+    return blockSize != 0 && coefficientCount == 2 * blockSize;
+}
+
+bool IsComplexLUTSparseTHICoefficientLayout(size_t coefficientCount, uint32_t digitBitSize, size_t order) {
+    uint32_t p       = GetPInputFromDigitBitSize(digitBitSize);
+    size_t blockSize = GetSparseTHIComplexLUTBlockSize(p, order);
+    return blockSize != 0 && coefficientCount == 2 * blockSize;
+}
+
 // GetBigModulus() calculates the big modulus as the product of
 // the "compositeDegree" number of parameter modulus
 double GetBigModulus(const std::shared_ptr<lbcrypto::CryptoParametersCKKSRNS> cryptoParams) {
@@ -77,6 +127,10 @@ double GetBigModulus(const std::shared_ptr<lbcrypto::CryptoParametersCKKSRNS> cr
 }  // namespace
 
 namespace lbcrypto {
+
+namespace {
+double g_fbtPreEvalExpNoise = 0.0;
+}
 
 //------------------------------------------------------------------------------
 // Bootstrap Wrapper
@@ -2277,7 +2331,8 @@ void FHECKKSRNS::AdjustCiphertextFBT(Ciphertext<DCRTPoly>& ciphertext, double co
     const auto cryptoParams = std::dynamic_pointer_cast<CryptoParametersCKKSRNS>(ciphertext->GetCryptoParameters());
 
     if (cryptoParams->GetScalingTechnique() == FLEXIBLEAUTO || cryptoParams->GetScalingTechnique() == FLEXIBLEAUTOEXT)
-        OPENFHE_THROW("This version of AdjustCiphertext is supported for FIXEDMANUAL and FIXEDAUTO methods only.");
+        OPENFHE_THROW(
+            "This version of AdjustCiphertext is supported for FIXEDMANUAL, FIXEDAUTO and FLEXIBLEMANUAL methods only.");
 #if NATIVEINT != 128
     // Scaling down the message by a correction factor to emulate using a larger q0.
     // This step is needed so we could use a scaling factor of up to 2^59 with q9 ~= 2^60.
@@ -2816,6 +2871,14 @@ void FHECKKSRNS::FitToNativeVector(uint32_t ringDim, const std::vector<int128_t>
 }
 #endif
 
+void FHECKKSRNS::SetFBTPreEvalExpNoise(double noise) {
+    g_fbtPreEvalExpNoise = noise;
+}
+
+double FHECKKSRNS::GetFBTPreEvalExpNoise() {
+    return g_fbtPreEvalExpNoise;
+}
+
 template <typename VectorDataType>
 void FHECKKSRNS::EvalFBTSetupInternal(const CryptoContextImpl<DCRTPoly>& cc, const std::vector<VectorDataType>& coeffs,
                                       uint32_t numSlots, const BigInteger& PIn, const BigInteger& POut,
@@ -2824,7 +2887,8 @@ void FHECKKSRNS::EvalFBTSetupInternal(const CryptoContextImpl<DCRTPoly>& cc, con
                                       uint32_t lvlsAfterBoot, uint32_t depthLeveledComputation, size_t order) {
     const auto cryptoParams = std::dynamic_pointer_cast<CryptoParametersCKKSRNS>(cc.GetCryptoParameters());
     if (cryptoParams->GetScalingTechnique() == FLEXIBLEAUTO || cryptoParams->GetScalingTechnique() == FLEXIBLEAUTOEXT)
-        OPENFHE_THROW("CKKS Functional Bootstrapping is supported for FIXEDMANUAL and FIXEDAUTO methods only.");
+        OPENFHE_THROW(
+            "CKKS Functional Bootstrapping is supported for FIXEDMANUAL, FIXEDAUTO and FLEXIBLEMANUAL methods only.");
     if (cryptoParams->GetKeySwitchTechnique() != HYBRID)
         OPENFHE_THROW("CKKS Functional Bootstrapping is only supported for the Hybrid key switching method.");
 
@@ -2903,7 +2967,8 @@ void FHECKKSRNS::EvalFBTSetupInternal(const CryptoContextImpl<DCRTPoly>& cc, con
     double scaleMod = QPrime.ConvertToLongDouble() / (Bigq.ConvertToLongDouble() * POut.ConvertToDouble());
     double scaleDec = scaleMod / pre;
 
-    uint32_t depthBT = depthLeveledComputation + GetFBTDepth(levelBudget, coeffs, PIn, order, skd);
+    uint32_t depthBT =
+        depthLeveledComputation + GetFBTDepth(levelBudget, coeffs, PIn, order, skd, __interpolation_method_global);
 
     // compute # of levels to remain when encoding the coefficients
     uint32_t L0   = cryptoParams->GetElementParams()->GetParams().size();
@@ -2933,12 +2998,14 @@ void FHECKKSRNS::EvalFBTSetupInternal(const CryptoContextImpl<DCRTPoly>& cc, con
         }
         else {
             precom->m_U0hatTPre = EvalLinearTransformPrecompute(cc, U0hatT, U1hatT, 0, scaleEnc, lEnc);
-            precom->m_U0Pre     = EvalLinearTransformPrecompute(cc, U0, U1, 1, scaleDec, lDec);
+            precom->m_U0Pre =
+                EvalLinearTransformPrecompute(cc, U0, (__complex_lut_global ? U0 : U1), 1, scaleDec, lDec);
         }
     }
     else {
         precom->m_U0hatTPreFFT = EvalCoeffsToSlotsPrecompute(cc, ksiPows, rotGroup, false, scaleEnc, lEnc);
-        precom->m_U0PreFFT     = EvalSlotsToCoeffsPrecompute(cc, ksiPows, rotGroup, false, scaleDec, lDec);
+        precom->m_U0PreFFT =
+            EvalSlotsToCoeffsPrecompute(cc, ksiPows, rotGroup, false, scaleDec, lDec, __complex_lut_global);
     }
 }
 
@@ -2977,7 +3044,7 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalHomDecoding(ConstCiphertext<DCRTPoly>& ciph
     //------------------------------------------------------------------------------
 
     // In the case of FLEXIBLEAUTO, we need one extra tower
-    if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL)
+    if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL && cryptoParams->GetScalingTechnique() != FLEXIBLEMANUAL)
         cc->GetScheme()->ModReduceInternalInPlace(ctxtEnc, BASE_NUM_LEVELS_TO_DROP);
 
     // linear transform for decoding
@@ -2986,10 +3053,11 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalHomDecoding(ConstCiphertext<DCRTPoly>& ciph
     auto isLTBS  = (p.m_paramsEnc.lvlb == 1) && (p.m_paramsDec.lvlb == 1);
     auto ctxtDec = (isLTBS) ? EvalLinearTransform(p.m_U0Pre, ctxtEnc) : EvalSlotsToCoeffs(p.m_U0PreFFT, ctxtEnc);
 
-    if (slots != cc->GetCyclotomicOrder() / 4) {
+    if (slots != cc->GetCyclotomicOrder() / 4 && !__complex_lut_global) {
         //------------------------------------------------------------------------------
         // SPARSELY PACKED CASE
         //------------------------------------------------------------------------------
+        // If complex lut, do not trace
         cc->EvalAddInPlaceNoCheck(ctxtDec, cc->EvalRotate(ctxtDec, slots));
     }
 
@@ -3044,9 +3112,10 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
     algo->ModReduceInternalInPlace(raised, raised->GetNoiseScaleDeg() - 1);
 
     // If correction ~ 1, we should not do this adjustment and save a level
-    // AA: make the check more granular (around 1.0000x?)
-    if (std::llround(correction) != 1.0)
-        AdjustCiphertextFBT(raised, correction);
+    if (cryptoParams->GetScalingTechnique() != FLEXIBLEMANUAL) {
+        if (std::llround(correction) != 1.0)
+            AdjustCiphertextFBT(raised, correction);
+    }
 
     uint32_t L0 = cryptoParams->GetElementParams()->GetParams().size();
     if (cryptoParams->GetSecretKeyDist() == SPARSE_ENCAPSULATED) {
@@ -3082,6 +3151,11 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
         raised->SetLevel(L0 - ctxtDCRTs[0].GetNumOfElements());
     }
 
+    // For FLEXIBLEMANUAL
+    if (cryptoParams->GetScalingTechnique() == FLEXIBLEMANUAL) {
+        raised->SetScalingFactor(cryptoParams->GetScalingFactorReal(0));
+    }
+
 #ifdef BOOTSTRAPTIMING
     std::cerr << "\nNumber of levels at the beginning of bootstrapping: "
               << raised->GetElements()[0].GetNumOfElements() - 1 << std::endl;
@@ -3106,6 +3180,10 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
 
     std::vector<Ciphertext<DCRTPoly>> ctxtEnc;
     std::shared_ptr<seriesPowers<DCRTPoly>> ctxtPowers;
+    const bool complexAKPLUT = (__interpolation_method_global == HERMITE_AKP25) &&
+                               IsComplexLUTAKPCoefficientLayout(coefficients.size(), digitBitSize, order);
+    const bool complexSparseLUT = (__interpolation_method_global == HERMITE_SPARSE_THI) &&
+                                  IsComplexLUTSparseTHICoefficientLayout(coefficients.size(), digitBitSize, order);
 
     if (slots == M / 4) {
         //------------------------------------------------------------------------------
@@ -3142,6 +3220,16 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
             }
         }
 
+        if (g_fbtPreEvalExpNoise != 0.0) {
+            double preEvalExpNoiseScale =
+                static_cast<double>(skd == SPARSE_ENCAPSULATED ? K_SPARSE_ENCAPSULATED : K_SPARSE);
+            cc->EvalAddInPlace(ctxtEnc[0], g_fbtPreEvalExpNoise / preEvalExpNoiseScale);
+            cc->EvalAddInPlace(ctxtEnc[1], g_fbtPreEvalExpNoise / preEvalExpNoiseScale);
+        }
+
+        __debug(ctxtEnc[0], "CoeffsToSlots0");
+        __debug(ctxtEnc[1], "CoeffsToSlots1");
+
         //------------------------------------------------------------------------------
         // Computing the powers for Approximate Mod Reduction
         //------------------------------------------------------------------------------
@@ -3168,9 +3256,33 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
             cc->ModReduceInPlace(ctxtEnc[1]);  // cos^2(pi x)
         }
         else {
-            auto& coeff_exp = (skd == SPARSE_ENCAPSULATED) ? coeff_exp_16_double_46 :
-                              (digitBitSize > 10)          ? coeff_exp_25_double_66 :
-                                                             coeff_exp_25_double_58;
+            auto selectEvalExpCoefficients = [&]() -> const std::vector<std::complex<double>>& {
+                if (skd == SPARSE_ENCAPSULATED) {
+                    switch (__eval_exp_degree_global == 0 ? 46u : __eval_exp_degree_global) {
+                        case 46:
+                            return coeff_exp_16_double_46;
+                        case 58:
+                            return coeff_exp_16_double_58;
+                        default:
+                            OPENFHE_THROW("Unsupported EvalExp degree for SPARSE_ENCAPSULATED: " +
+                                          std::to_string(__eval_exp_degree_global) +
+                                          ". Supported degrees are 46 and 58.");
+                    }
+                }
+
+                switch (__eval_exp_degree_global == 0 ? 66u : __eval_exp_degree_global) {
+                    case 58:
+                        return coeff_exp_25_double_58;
+                    case 66:
+                        return coeff_exp_25_double_66;
+                    default:
+                        OPENFHE_THROW("Unsupported EvalExp degree for this secret key distribution: " +
+                                      std::to_string(__eval_exp_degree_global) + ". Supported degrees are 58 and 66.");
+                }
+            };
+            auto& coeff_exp = selectEvalExpCoefficients();
+
+            KeySwitchCounter = 0;
 
             // Obtain exp(Pi/2*i*x) approximation via Chebyshev Basis Polynomial Interpolation
             ctxtEnc[0] = algo->EvalChebyshevSeries(ctxtEnc[0], coeff_exp, coeffLowerBound, coeffUpperBound);
@@ -3188,16 +3300,53 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
             cc->ModReduceInPlace(ctxtEnc[1]);
         }
 
-        auto ctxtPowersRe = algo->EvalPowers(ctxtEnc[0], coefficients);
-        auto ctxtPowersIm = algo->EvalPowers(ctxtEnc[1], coefficients);
+        __debug(ctxtEnc[0], "Exp0");
+        __debug(ctxtEnc[1], "Exp1");
+        KeySwitchCounter = 0;
 
-        if (ctxtPowersRe->powers2Re.size() == 0) {
-            ctxtPowers = std::make_shared<seriesPowers<DCRTPoly>>(ctxtPowersRe->powersRe, ctxtPowersIm->powersRe);
+        if (complexAKPLUT || complexSparseLUT)
+            OPENFHE_THROW(
+                "Complex-valued LUT evaluation is supported only for sparse packing in the pure-CKKS workflow.");
+
+        if (__interpolation_method_global == HERMITE_BKSS24) {
+            auto adv       = algo->CustomGetAdvancedSHE();
+            auto ckksAdv   = std::dynamic_pointer_cast<AdvancedSHECKKSRNS>(adv);
+            auto totalSize = coefficients.size();
+            auto d         = (totalSize - 1) / 4 - 1;
+
+            auto ctxtPowersRe = ckksAdv->EvalPowersMultiPolynomialBSGS(ctxtEnc[0], d);
+            auto ctxtPowersIm = ckksAdv->EvalPowersMultiPolynomialBSGS(ctxtEnc[1], d);
+            ctxtPowers        = std::make_shared<seriesPowers<DCRTPoly>>(
+                ctxtPowersRe->powersRe, ctxtPowersRe->powers2Re, ctxtPowersRe->power2km1Re, ctxtPowersRe->k,
+                ctxtPowersRe->m, ctxtPowersIm->powersRe, ctxtPowersIm->powers2Re, ctxtPowersIm->power2km1Re);
         }
-        else {
+        else if (__interpolation_method_global == HERMITE_SPARSE_THI) {
+            auto halfSize = (coefficients.size() / (2 * order + 1));
+            auto adv      = algo->CustomGetAdvancedSHE();
+            auto ckksAdv  = std::dynamic_pointer_cast<AdvancedSHECKKSRNS>(adv);
+            auto nPoly    = (order + 1);
+
+            auto ctxtPowersRe =
+                ckksAdv->EvalPowersMultiPolynomial(ctxtEnc[0], halfSize, nPoly, HERMITE_SPARSE_THI, halfSize * 2);
+            auto ctxtPowersIm =
+                ckksAdv->EvalPowersMultiPolynomial(ctxtEnc[1], halfSize, nPoly, HERMITE_SPARSE_THI, halfSize * 2);
             ctxtPowers = std::make_shared<seriesPowers<DCRTPoly>>(
                 ctxtPowersRe->powersRe, ctxtPowersRe->powers2Re, ctxtPowersRe->power2km1Re, ctxtPowersRe->k,
                 ctxtPowersRe->m, ctxtPowersIm->powersRe, ctxtPowersIm->powers2Re, ctxtPowersIm->power2km1Re);
+            ctxtPowers->auxiliaryPowersRe = ctxtPowersRe->auxiliaryPowersRe;
+            ctxtPowers->auxiliaryPowersIm = ctxtPowersIm->auxiliaryPowersRe;
+        }
+        else {
+            auto ctxtPowersRe = algo->EvalPowers(ctxtEnc[0], coefficients);
+            auto ctxtPowersIm = algo->EvalPowers(ctxtEnc[1], coefficients);
+            if (ctxtPowersRe->powers2Re.size() == 0) {
+                ctxtPowers = std::make_shared<seriesPowers<DCRTPoly>>(ctxtPowersRe->powersRe, ctxtPowersIm->powersRe);
+            }
+            else {
+                ctxtPowers = std::make_shared<seriesPowers<DCRTPoly>>(
+                    ctxtPowersRe->powersRe, ctxtPowersRe->powers2Re, ctxtPowersRe->power2km1Re, ctxtPowersRe->k,
+                    ctxtPowersRe->m, ctxtPowersIm->powersRe, ctxtPowersIm->powers2Re, ctxtPowersIm->power2km1Re);
+            }
         }
     }
     else {
@@ -3225,7 +3374,8 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
         auto& evalKeyMap = cc->GetEvalAutomorphismKeyMap(ctxtEnc[0]->GetKeyTag());
         cc->EvalAddInPlace(ctxtEnc[0], Conjugate(ctxtEnc[0], evalKeyMap));
 
-        if (cryptoParams->GetScalingTechnique() == FIXEDMANUAL) {
+        if (cryptoParams->GetScalingTechnique() == FIXEDMANUAL ||
+            cryptoParams->GetScalingTechnique() == FLEXIBLEMANUAL) {
             while (ctxtEnc[0]->GetNoiseScaleDeg() > 1)
                 cc->ModReduceInPlace(ctxtEnc[0]);
         }
@@ -3233,6 +3383,14 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
             if (ctxtEnc[0]->GetNoiseScaleDeg() == 2)
                 algo->ModReduceInternalInPlace(ctxtEnc[0], BASE_NUM_LEVELS_TO_DROP);
         }
+
+        if (g_fbtPreEvalExpNoise != 0.0) {
+            double preEvalExpNoiseScale =
+                static_cast<double>(skd == SPARSE_ENCAPSULATED ? K_SPARSE_ENCAPSULATED : K_SPARSE);
+            cc->EvalAddInPlace(ctxtEnc[0], g_fbtPreEvalExpNoise / preEvalExpNoiseScale);
+        }
+
+        __debug(ctxtEnc[0], "CoeffsToSlots");
 
         //------------------------------------------------------------------------------
         // Running Approximate Mod Reduction
@@ -3252,9 +3410,33 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
             cc->ModReduceInPlace(ctxtEnc[0]);  // cos^2(pi x)
         }
         else {
-            auto& coeff_exp = (skd == SPARSE_ENCAPSULATED) ? coeff_exp_16_double_46 :
-                              (digitBitSize > 10)          ? coeff_exp_25_double_66 :
-                                                             coeff_exp_25_double_58;
+            auto selectEvalExpCoefficients = [&]() -> const std::vector<std::complex<double>>& {
+                if (skd == SPARSE_ENCAPSULATED) {
+                    switch (__eval_exp_degree_global == 0 ? 46u : __eval_exp_degree_global) {
+                        case 46:
+                            return coeff_exp_16_double_46;
+                        case 58:
+                            return coeff_exp_16_double_58;
+                        default:
+                            OPENFHE_THROW("Unsupported EvalExp degree for SPARSE_ENCAPSULATED: " +
+                                          std::to_string(__eval_exp_degree_global) +
+                                          ". Supported degrees are 46 and 58.");
+                    }
+                }
+
+                switch (__eval_exp_degree_global == 0 ? 66u : __eval_exp_degree_global) {
+                    case 58:
+                        return coeff_exp_25_double_58;
+                    case 66:
+                        return coeff_exp_25_double_66;
+                    default:
+                        OPENFHE_THROW("Unsupported EvalExp degree for this secret key distribution: " +
+                                      std::to_string(__eval_exp_degree_global) + ". Supported degrees are 58 and 66.");
+                }
+            };
+            auto& coeff_exp = selectEvalExpCoefficients();
+
+            KeySwitchCounter = 0;
 
             // Obtain exp(Pi/2*i*x) approximation via Chebyshev Basis Polynomial Interpolation
             ctxtEnc[0] = algo->EvalChebyshevSeries(ctxtEnc[0], coeff_exp, coeffLowerBound, coeffUpperBound);
@@ -3264,10 +3446,42 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
             cc->ModReduceInPlace(ctxtEnc[0]);
             cc->EvalSquareInPlace(ctxtEnc[0]);
             cc->ModReduceInPlace(ctxtEnc[0]);
+
+            KeySwitchCounter = 0;
         }
 
-        // No need to scale the message back up after Chebyshev interpolation
-        ctxtPowers = algo->EvalPowers(ctxtEnc[0], coefficients);
+        __debug(ctxtEnc[0], "Exp");
+
+        if (__interpolation_method_global == HERMITE_BKSS24) {
+            auto adv       = algo->CustomGetAdvancedSHE();
+            auto ckksAdv   = std::dynamic_pointer_cast<AdvancedSHECKKSRNS>(adv);
+            auto totalSize = coefficients.size();
+            auto d         = (totalSize - 1) / 4 - 1;
+            ctxtPowers     = ckksAdv->EvalPowersMultiPolynomialBSGS(ctxtEnc[0], d);
+        }
+        else if (__interpolation_method_global == HERMITE_SPARSE_THI) {
+            auto pInput   = GetPInputFromDigitBitSize(digitBitSize);
+            auto halfSize = pInput / 2;
+
+            auto adv     = algo->CustomGetAdvancedSHE();
+            auto ckksAdv = std::dynamic_pointer_cast<AdvancedSHECKKSRNS>(adv);
+            auto nPoly   = complexSparseLUT ? 2 * (order + 1) : (order + 1);
+            ctxtPowers =
+                ckksAdv->EvalPowersMultiPolynomial(ctxtEnc[0], halfSize, nPoly, HERMITE_SPARSE_THI, pInput, order);
+        }
+        else if (complexAKPLUT) {
+            auto pInput    = GetPInputFromDigitBitSize(digitBitSize);
+            auto blockSize = GetAKPComplexLUTBlockSize(pInput, order);
+
+            auto adv     = algo->CustomGetAdvancedSHE();
+            auto ckksAdv = std::dynamic_pointer_cast<AdvancedSHECKKSRNS>(adv);
+            ctxtPowers =
+                ckksAdv->EvalPowersMultiPolynomial(ctxtEnc[0], blockSize - 1, 2, __interpolation_method_global, pInput);
+        }
+        else {
+            // No need to scale the message back up after Chebyshev interpolation
+            ctxtPowers = algo->EvalPowers(ctxtEnc[0], coefficients);
+        }
     }
 
     // 64-bit only: No need to scale back the message to its original scale.
@@ -3297,17 +3511,118 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalMVBNoDecodingInternal(const std::shared_ptr
     if (cryptoParams->GetKeySwitchTechnique() != HYBRID)
         OPENFHE_THROW("CKKS Bootstrapping is only supported for the Hybrid key switching method.");
 
-    auto cc        = ciphertexts->powersRe[0]->GetCryptoContext();
-    uint32_t M4    = cc->GetCyclotomicOrder() / 4;
-    uint32_t slots = ciphertexts->powersRe[0]->GetSlots();
-    auto algo      = cc->GetScheme();
+    auto cc                  = ciphertexts->powersRe[0]->GetCryptoContext();
+    uint32_t M4              = cc->GetCyclotomicOrder() / 4;
+    uint32_t slots           = ciphertexts->powersRe[0]->GetSlots();
+    auto algo                = cc->GetScheme();
+    const bool complexAKPLUT = (__interpolation_method_global == HERMITE_AKP25) &&
+                               IsComplexLUTAKPCoefficientLayout(coefficients.size(), digitBitSize, order);
+    const bool complexSparseLUT = (__interpolation_method_global == HERMITE_SPARSE_THI) &&
+                                  IsComplexLUTSparseTHICoefficientLayout(coefficients.size(), digitBitSize, order);
 
     Ciphertext<DCRTPoly> ctxtEnc;
+
+    auto evalBKSS24WithPrecomp = [&](const std::shared_ptr<seriesPowers<DCRTPoly>>& ctxtPowersSingle) {
+        auto adv       = algo->CustomGetAdvancedSHE();
+        auto ckksAdv   = std::dynamic_pointer_cast<AdvancedSHECKKSRNS>(adv);
+        auto totalSize = coefficients.size();
+        auto p         = (totalSize - 1) / 4;
+
+        std::vector<std::complex<double>> Pf(p);
+        std::vector<std::complex<double>> Pfr(p);
+        std::vector<std::complex<double>> Qf(p);
+        std::vector<std::complex<double>> Qfr(p);
+        std::complex<double> f0 = coefficients[4 * p];
+        for (size_t i = 0; i != p; ++i) {
+            Pf[i]  = coefficients[i];
+            Pfr[i] = std::conj(coefficients[p + i]);
+            Qf[i]  = coefficients[2 * p + i];
+            Qfr[i] = std::conj(coefficients[3 * p + i]);
+        }
+
+        auto Pfx  = ckksAdv->EvalPolyBSGSWithPrecomp(ctxtPowersSingle, Pf);
+        auto Pfrx = ckksAdv->EvalPolyBSGSWithPrecomp(ctxtPowersSingle, Pfr);
+        auto Qfx  = ckksAdv->EvalPolyBSGSWithPrecomp(ctxtPowersSingle, Qf);
+        auto Qfrx = ckksAdv->EvalPolyBSGSWithPrecomp(ctxtPowersSingle, Qfr);
+
+        Pfrx = Conjugate(Pfrx, cc->GetEvalAutomorphismKeyMap(Pfrx->GetKeyTag()));
+        Qfrx = Conjugate(Qfrx, cc->GetEvalAutomorphismKeyMap(Qfrx->GetKeyTag()));
+
+        auto Pfxx = cc->EvalAdd(Pfx, Pfrx);
+        cc->EvalAddInPlace(Pfxx, f0);
+
+        auto x      = ctxtPowersSingle->powersRe[0];
+        auto x_conj = Conjugate(x, cc->GetEvalAutomorphismKeyMap(x->GetKeyTag()));
+        auto negzz  = cc->EvalMult(x, x_conj);
+        cc->EvalNegateInPlace(negzz);
+        algo->ModReduceInPlace(negzz, 1);
+
+        auto Qfxx = cc->EvalAdd(Qfx, Qfrx);
+        if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL)
+            algo->AdjustLevelsAndDepthInPlace(negzz, Qfxx);
+        auto qterm = cc->EvalMult(Qfxx, negzz);
+        algo->ModReduceInPlace(qterm, 1);
+        return cc->EvalAdd(Pfxx, qterm);
+    };
+
+    auto evalHybridMultiEvalWithPrecomp = [&](const std::shared_ptr<seriesPowers<DCRTPoly>>& ctxtPowersSingle,
+                                              const std::vector<Ciphertext<DCRTPoly>>& zPowers,
+                                              const std::vector<VectorDataType>& coefficients) {
+        auto pInput   = GetPInputFromDigitBitSize(digitBitSize);
+        auto halfSize = pInput / 2;
+        auto nPoly    = order + 1;
+        if (zPowers.size() + 1 < nPoly)
+            OPENFHE_THROW("Missing MIXEDCONSTRAINTS auxiliary powers.");
+
+        std::vector<Ciphertext<DCRTPoly>> terms;
+        terms.reserve(nPoly);
+        for (size_t ell = 0; ell < nPoly; ++ell) {
+            size_t start = ell * 2 * halfSize;
+            if (start + halfSize + 1 > coefficients.size())
+                OPENFHE_THROW("Incorrect MIXEDCONSTRAINTS coefficients.");
+            std::vector<std::complex<double>> block(coefficients.begin() + start,
+                                                    coefficients.begin() + start + halfSize + 1);
+            auto term = cc->EvalPolyWithPrecomp(ctxtPowersSingle, block);
+            if (ell > 0) {
+                auto zPower = zPowers[ell - 1];
+                if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL) {
+                    //cc->GetScheme()->AdjustLevelsAndDepthInPlace(term, zPower);
+                    while (term->GetLevel() < zPower->GetLevel()) {
+                        term = cc->EvalMult(term, 1.0);
+                        cc->ModReduceInPlace(term);
+                    }
+                }
+                term = cc->EvalMult(term, zPower);
+                cc->ModReduceInPlace(term);
+            }
+            terms.push_back(term);
+        }
+
+        auto result = terms.front();
+        if (terms.size() > 1) {
+            if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL) {
+                //cc->GetScheme()->AdjustLevelsAndDepthInPlace(result, terms[1]);
+                while (result->GetLevel() < terms[1]->GetLevel()) {
+                    result = cc->EvalMult(result, 1.0);
+                    cc->ModReduceInPlace(result);
+                }
+            }
+            for (size_t ell = 1; ell < terms.size(); ++ell) {
+                cc->EvalAddInPlace(result, terms[ell]);
+            }
+        }
+        cc->EvalAddInPlaceNoCheck(result, Conjugate(result, cc->GetEvalAutomorphismKeyMap(result->GetKeyTag())));
+        return result;
+    };
 
     if (slots == M4) {
         //------------------------------------------------------------------------------
         // FULLY PACKED CASE
         //------------------------------------------------------------------------------
+        if (complexAKPLUT || complexSparseLUT)
+            OPENFHE_THROW(
+                "Complex-valued LUT evaluation is supported only for sparse packing in the pure-CKKS workflow.");
+
         if (ciphertexts->powersIm.size() == 0)
             OPENFHE_THROW("Full packing requires powers for both the real and imaginary parts.");
         Ciphertext<DCRTPoly> ctxtEncI;
@@ -3350,17 +3665,37 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalMVBNoDecodingInternal(const std::shared_ptr
                                                              ciphertexts->power2km1Im, ciphertexts->k, ciphertexts->m);
             }
 
-            // Take the real part
-            // Division by 2 was already performed
-            ctxtEnc = cc->EvalPolyWithPrecomp(ctxtPowersRe, coefficients);
-            cc->EvalAddInPlace(ctxtEnc, Conjugate(ctxtEnc, cc->GetEvalAutomorphismKeyMap(ctxtEnc->GetKeyTag())));
-            ctxtEncI = cc->EvalPolyWithPrecomp(ctxtPowersIm, coefficients);
-            cc->EvalAddInPlace(ctxtEncI, Conjugate(ctxtEncI, cc->GetEvalAutomorphismKeyMap(ctxtEnc->GetKeyTag())));
+            if (__interpolation_method_global == HERMITE_BKSS24) {
+                ctxtEnc  = evalBKSS24WithPrecomp(ctxtPowersRe);
+                ctxtEncI = evalBKSS24WithPrecomp(ctxtPowersIm);
+            }
+            else if (__interpolation_method_global == HERMITE_SPARSE_THI) {
+                if (ciphertexts->auxiliaryPowersRe.empty() || ciphertexts->auxiliaryPowersIm.empty())
+                    OPENFHE_THROW("Missing SPARSE_THI auxiliary powers for full packing.");
+                ctxtEnc  = evalHybridMultiEvalWithPrecomp(ctxtPowersRe, ciphertexts->auxiliaryPowersRe, coefficients);
+                ctxtEncI = evalHybridMultiEvalWithPrecomp(ctxtPowersIm, ciphertexts->auxiliaryPowersIm, coefficients);
+            }
+            else if (__interpolation_method_global == HERMITE_FULL_THI) {
+                // No 2Re[] for full THI
+                ctxtEnc  = cc->EvalPolyWithPrecomp(ctxtPowersRe, coefficients);
+                ctxtEncI = cc->EvalPolyWithPrecomp(ctxtPowersIm, coefficients);
+            }
+            else {
+                // Take the real part
+                // Division by 2 was already performed
+                ctxtEnc = cc->EvalPolyWithPrecomp(ctxtPowersRe, coefficients);
+                cc->EvalAddInPlace(ctxtEnc, Conjugate(ctxtEnc, cc->GetEvalAutomorphismKeyMap(ctxtEnc->GetKeyTag())));
+                ctxtEncI = cc->EvalPolyWithPrecomp(ctxtPowersIm, coefficients);
+                cc->EvalAddInPlace(ctxtEncI, Conjugate(ctxtEncI, cc->GetEvalAutomorphismKeyMap(ctxtEncI->GetKeyTag())));
+            }
         }
 
         algo->MultByMonomialInPlace(ctxtEncI, M4);
         cc->EvalAddInPlace(ctxtEnc, ctxtEncI);
         // No need to scale the message back up after Chebyshev interpolation
+
+        __debug(ctxtEnc, "LUT0");
+        __debug(ctxtEncI, "LUT1");
     }
     else {
         //------------------------------------------------------------------------------
@@ -3384,25 +3719,96 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalMVBNoDecodingInternal(const std::shared_ptr
             }
         }
         else {
-            // Obtain the complex Hermite Trigonometric Interpolation via Power Basis Polynomial Interpolation
-            // Coefficients are divided by 2
-            std::shared_ptr<seriesPowers<DCRTPoly>> ctxtPowersRe;
-            if (ciphertexts->powers2Re.size() == 0) {
-                ctxtPowersRe = std::make_shared<seriesPowers<DCRTPoly>>(ciphertexts->powersRe);
-            }
-            else {
-                ctxtPowersRe =
+            if (__interpolation_method_global == HERMITE_BKSS24) {
+                auto ctxtPowersRe =
                     std::make_shared<seriesPowers<DCRTPoly>>(ciphertexts->powersRe, ciphertexts->powers2Re,
                                                              ciphertexts->power2km1Re, ciphertexts->k, ciphertexts->m);
-            }
-            ctxtEnc = cc->EvalPolyWithPrecomp(ctxtPowersRe, coefficients);
 
-            // Take the real part
-            // Division by 2 was already performed
-            cc->EvalAddInPlaceNoCheck(ctxtEnc, Conjugate(ctxtEnc, cc->GetEvalAutomorphismKeyMap(ctxtEnc->GetKeyTag())));
+                ctxtEnc = evalBKSS24WithPrecomp(ctxtPowersRe);
+            }
+            else if (__interpolation_method_global == HERMITE_SPARSE_THI) {
+                auto pInput           = GetPInputFromDigitBitSize(digitBitSize);
+                auto nPoly            = order + 1;
+                auto coeffsImagOffset = ((2 * order + 1) * pInput) / 2 + 1;
+
+                auto ctxtPowersRe =
+                    std::make_shared<seriesPowers<DCRTPoly>>(ciphertexts->powersRe, ciphertexts->powers2Re,
+                                                             ciphertexts->power2km1Re, ciphertexts->k, ciphertexts->m);
+                ctxtPowersRe->auxiliaryPowersRe = ciphertexts->auxiliaryPowersRe;
+
+                if (ctxtPowersRe->auxiliaryPowersRe.size() + 1 < nPoly)
+                    OPENFHE_THROW("Missing SPARSE_THI auxiliary powers.");
+
+                ctxtEnc = evalHybridMultiEvalWithPrecomp(ctxtPowersRe, ciphertexts->auxiliaryPowersRe, coefficients);
+                if (complexSparseLUT) {
+                    std::vector<VectorDataType> coefficientsImag(coefficients.begin() + coeffsImagOffset,
+                                                                 coefficients.end());
+                    auto ctxtImag =
+                        evalHybridMultiEvalWithPrecomp(ctxtPowersRe, ciphertexts->auxiliaryPowersRe, coefficientsImag);
+                    algo->MultByMonomialInPlace(ctxtImag, M4);
+                    cc->EvalAddInPlace(ctxtEnc, ctxtImag);
+                }
+            }
+            else if (complexAKPLUT) {
+                auto pInput    = GetPInputFromDigitBitSize(digitBitSize);
+                auto blockSize = GetAKPComplexLUTBlockSize(pInput, order);
+                auto ctxtPowersRe =
+                    std::make_shared<seriesPowers<DCRTPoly>>(ciphertexts->powersRe, ciphertexts->powers2Re,
+                                                             ciphertexts->power2km1Re, ciphertexts->k, ciphertexts->m);
+
+                auto evalAKPSuite = [&](size_t suiteOffset) {
+                    if (suiteOffset + blockSize > coefficients.size())
+                        OPENFHE_THROW("Incorrect complex AKP coefficients");
+                    std::vector<std::complex<double>> block(coefficients.begin() + suiteOffset,
+                                                            coefficients.begin() + suiteOffset + blockSize);
+                    auto result = cc->EvalPolyWithPrecomp(ctxtPowersRe, block);
+                    cc->EvalAddInPlaceNoCheck(result,
+                                              Conjugate(result, cc->GetEvalAutomorphismKeyMap(result->GetKeyTag())));
+                    return result;
+                };
+
+                ctxtEnc       = evalAKPSuite(0);
+                auto ctxtImag = evalAKPSuite(blockSize);
+                algo->MultByMonomialInPlace(ctxtImag, M4);
+                cc->EvalAddInPlace(ctxtEnc, ctxtImag);
+            }
+            else if (__interpolation_method_global == HERMITE_FULL_THI) {
+                // Obtain the complex Hermite Trigonometric Interpolation via Power Basis Polynomial Interpolation
+                // Coefficients are *not* divided by 2
+                std::shared_ptr<seriesPowers<DCRTPoly>> ctxtPowersRe;
+                if (ciphertexts->powers2Re.size() == 0) {
+                    ctxtPowersRe = std::make_shared<seriesPowers<DCRTPoly>>(ciphertexts->powersRe);
+                }
+                else {
+                    ctxtPowersRe = std::make_shared<seriesPowers<DCRTPoly>>(
+                        ciphertexts->powersRe, ciphertexts->powers2Re, ciphertexts->power2km1Re, ciphertexts->k,
+                        ciphertexts->m);
+                }
+                ctxtEnc = cc->EvalPolyWithPrecomp(ctxtPowersRe, coefficients);
+            }
+            else {
+                // Obtain the complex Hermite Trigonometric Interpolation via Power Basis Polynomial Interpolation
+                // Coefficients are divided by 2
+                std::shared_ptr<seriesPowers<DCRTPoly>> ctxtPowersRe;
+                if (ciphertexts->powers2Re.size() == 0) {
+                    ctxtPowersRe = std::make_shared<seriesPowers<DCRTPoly>>(ciphertexts->powersRe);
+                }
+                else {
+                    ctxtPowersRe = std::make_shared<seriesPowers<DCRTPoly>>(
+                        ciphertexts->powersRe, ciphertexts->powers2Re, ciphertexts->power2km1Re, ciphertexts->k,
+                        ciphertexts->m);
+                }
+                ctxtEnc = cc->EvalPolyWithPrecomp(ctxtPowersRe, coefficients);
+
+                // Take the real part
+                // Division by 2 was already performed
+                cc->EvalAddInPlaceNoCheck(ctxtEnc,
+                                          Conjugate(ctxtEnc, cc->GetEvalAutomorphismKeyMap(ctxtEnc->GetKeyTag())));
+            }
         }
 
         // No need to scale the message back up after Chebyshev interpolation
+        __debug(ctxtEnc, "LUT");
     }
 
     // // 64-bit only: No need to scale back the message to its original scale.
@@ -3513,12 +3919,41 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalHermiteTrigSeries(ConstCiphertext<DCRTPoly>
 
 template <typename VectorDataType>
 uint32_t FHECKKSRNS::AdjustDepthFBT(const std::vector<VectorDataType>& coefficients, const BigInteger& PInput,
-                                    size_t order, SecretKeyDist skd) {
-    auto& coeff_cos = (skd == SPARSE_ENCAPSULATED) ? coeff_cos_16_double : coeff_cos_25_double;
-    auto& coeff_exp = (skd == SPARSE_ENCAPSULATED)   ? coeff_exp_16_double_46 :
-                      (PInput.ConvertToInt() > 1024) ? coeff_exp_25_double_66 :
-                                                       coeff_exp_25_double_58;
-    uint32_t depth  = 0;
+                                    size_t order, SecretKeyDist skd, InterpolationMethod method) {
+    auto interpolationMethod       = (method == HERMITE_INVALID) ? __interpolation_method_global : method;
+    auto& coeff_cos                = (skd == SPARSE_ENCAPSULATED) ? coeff_cos_16_double : coeff_cos_25_double;
+    auto selectEvalExpCoefficients = [&]() -> const std::vector<std::complex<double>>& {
+        if (skd == SPARSE_ENCAPSULATED) {
+            switch (__eval_exp_degree_global == 0 ? 46u : __eval_exp_degree_global) {
+                case 46:
+                    return coeff_exp_16_double_46;
+                case 58:
+                    return coeff_exp_16_double_58;
+                default:
+                    OPENFHE_THROW("Unsupported EvalExp degree for SPARSE_ENCAPSULATED: " +
+                                  std::to_string(__eval_exp_degree_global) + ". Supported degrees are 46 and 58.");
+            }
+        }
+
+        switch (__eval_exp_degree_global == 0 ? 66u : __eval_exp_degree_global) {
+            case 58:
+                return coeff_exp_25_double_58;
+            case 66:
+                return coeff_exp_25_double_66;
+            default:
+                OPENFHE_THROW("Unsupported EvalExp degree for this secret key distribution: " +
+                              std::to_string(__eval_exp_degree_global) + ". Supported degrees are 58 and 66.");
+        }
+    };
+    auto& coeff_exp          = selectEvalExpCoefficients();
+    auto pInputInt           = PInput.ConvertToInt<uint32_t>();
+    uint32_t depth           = 0;
+    const bool complexAKPLUT = (interpolationMethod == HERMITE_AKP25) &&
+                               GetAKPComplexLUTBlockSize(pInputInt, order) != 0 &&
+                               coefficients.size() == 2 * GetAKPComplexLUTBlockSize(pInputInt, order);
+    const bool complexSparseTHILUT = interpolationMethod == HERMITE_SPARSE_THI &&
+                                     GetSparseTHIComplexLUTBlockSize(pInputInt, order) != 0 &&
+                                     coefficients.size() == 2 * GetSparseTHIComplexLUTBlockSize(pInputInt, order);
     switch (PInput.ConvertToInt()) {
         case 2:
             if (order > 1) {
@@ -3536,8 +3971,27 @@ uint32_t FHECKKSRNS::AdjustDepthFBT(const std::vector<VectorDataType>& coefficie
             depth += GetMultiplicativeDepthByCoeffVector(coeff_exp, false);
             break;
         default:
-            depth += GetMultiplicativeDepthByCoeffVector(coefficients, true);
             depth += GetMultiplicativeDepthByCoeffVector(coeff_exp, false);
+            if (interpolationMethod == HERMITE_BKSS24) {
+                auto totalSize = coefficients.size();
+                auto p         = (totalSize - 1) / 4;
+                depth +=
+                    static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(p)))) + 1;  // Due to vanilla BSGS
+            }
+            else if (interpolationMethod == HERMITE_SPARSE_THI) {
+                auto halfSize = complexSparseTHILUT ? pInputInt / 2 : coefficients.size() / (2 * order + 1);
+                depth += GetDepthByDegreeHybridMultiEval(halfSize, order + 1, pInputInt);
+            }
+            else if (complexAKPLUT) {
+                auto blockSize = GetAKPComplexLUTBlockSize(pInputInt, order);
+                auto degs      = ComputeDegreesPSMultiEval(blockSize - 1, 2);
+                auto k         = degs[0];
+                auto m         = degs[1];
+                depth += static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(k)))) + m;
+            }
+            else {
+                depth += GetMultiplicativeDepthByCoeffVector(coefficients, true);
+            }
             break;
     }
     depth += 2;  // the number of double-angle iterations is fixed to 2
@@ -3545,23 +3999,25 @@ uint32_t FHECKKSRNS::AdjustDepthFBT(const std::vector<VectorDataType>& coefficie
 }
 
 template uint32_t FHECKKSRNS::AdjustDepthFBT(const std::vector<int64_t>& coefficients, const BigInteger& PInput,
-                                             size_t order, SecretKeyDist skd);
+                                             size_t order, SecretKeyDist skd, InterpolationMethod method);
 template uint32_t FHECKKSRNS::AdjustDepthFBT(const std::vector<std::complex<double>>& coefficients,
-                                             const BigInteger& PInput, size_t order, SecretKeyDist skd);
+                                             const BigInteger& PInput, size_t order, SecretKeyDist skd,
+                                             InterpolationMethod method);
 
 template <typename VectorDataType>
 uint32_t FHECKKSRNS::GetFBTDepth(const std::vector<uint32_t>& levelBudget,
                                  const std::vector<VectorDataType>& coefficients, const BigInteger& PInput,
-                                 size_t order, SecretKeyDist skd) {
-    return levelBudget[0] + levelBudget[1] + AdjustDepthFBT(coefficients, PInput, order, skd);
+                                 size_t order, SecretKeyDist skd, InterpolationMethod method) {
+    return levelBudget[0] + levelBudget[1] + AdjustDepthFBT(coefficients, PInput, order, skd, method);
 }
 
 template uint32_t FHECKKSRNS::GetFBTDepth(const std::vector<uint32_t>& levelBudget,
                                           const std::vector<int64_t>& coefficients, const BigInteger& PInput,
-                                          size_t order, SecretKeyDist skd);
+                                          size_t order, SecretKeyDist skd, InterpolationMethod method);
 template uint32_t FHECKKSRNS::GetFBTDepth(const std::vector<uint32_t>& levelBudget,
                                           const std::vector<std::complex<double>>& coefficients,
-                                          const BigInteger& PInput, size_t order, SecretKeyDist skd);
+                                          const BigInteger& PInput, size_t order, SecretKeyDist skd,
+                                          InterpolationMethod method);
 
 EvalKey<DCRTPoly> FHECKKSRNS::KeySwitchGenSparse(const PrivateKey<DCRTPoly>& oldPrivateKey,
                                                  const PrivateKey<DCRTPoly>& newPrivateKey) {

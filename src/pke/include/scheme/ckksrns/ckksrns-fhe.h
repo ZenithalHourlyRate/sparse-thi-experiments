@@ -35,6 +35,7 @@
 #include "constants.h"
 #include "encoding/plaintext-fwd.h"
 #include "math/hal/basicint.h"
+#include "math/hermite.h"
 #include "scheme/ckksrns/ckksrns-utils.h"
 #include "schemerns/rns-fhe.h"
 #include "utils/caller_info.h"
@@ -287,11 +288,12 @@ public:
     template <typename VectorDataType>
     static uint32_t GetFBTDepth(const std::vector<uint32_t>& levelBudget,
                                 const std::vector<VectorDataType>& coefficients, const BigInteger& PInput, size_t order,
-                                SecretKeyDist skd);
+                                SecretKeyDist skd, InterpolationMethod method = HERMITE_INVALID);
 
     template <typename VectorDataType>
     static uint32_t AdjustDepthFBT(const std::vector<VectorDataType>& coefficients, const BigInteger& PInput,
-                                   size_t order, SecretKeyDist skd = SPARSE_TERNARY);
+                                   size_t order, SecretKeyDist skd = SPARSE_TERNARY,
+                                   InterpolationMethod method = HERMITE_INVALID);
 
     // generates a key going from a denser secret to a sparser one
     static EvalKey<DCRTPoly> KeySwitchGenSparse(const PrivateKey<DCRTPoly>& oldPrivateKey,
@@ -327,6 +329,42 @@ public:
 
     static Ciphertext<DCRTPoly> Conjugate(ConstCiphertext<DCRTPoly> ciphertext,
                                           const std::map<uint32_t, EvalKey<DCRTPoly>>& evalKeys);
+
+    static const std::vector<std::complex<double>>& GetCoeffExp16Double46() {
+        return coeff_exp_16_double_46;
+    }
+
+    static const std::vector<std::complex<double>>& GetCoeffExp16Double58() {
+        return coeff_exp_16_double_58;
+    }
+
+    static const std::vector<std::complex<double>>& GetCoeffExp25Double58() {
+        return coeff_exp_25_double_58;
+    }
+
+    static const std::vector<std::complex<double>>& GetCoeffExp25Double66() {
+        return coeff_exp_25_double_66;
+    }
+
+    static const std::vector<double>& GetCoeffCos25Double() {
+        return coeff_cos_25_double;
+    }
+
+    static const std::vector<double>& GetCoeffCos16Double() {
+        return coeff_cos_16_double;
+    }
+
+    static const std::vector<double>& GetGCoefficientsSparse() {
+        return g_coefficientsSparse;
+    }
+
+    static const std::vector<double>& GetGCoefficientsSparseEncapsulated() {
+        return g_coefficientsSparseEncapsulated;
+    }
+
+    static void SetFBTPreEvalExpNoise(double noise);
+
+    static double GetFBTPreEvalExpNoise();
 
 private:
     CKKSBootstrapPrecom& GetBootPrecom(uint32_t slots) const {
@@ -580,6 +618,31 @@ private:
         -4.4681665467734785701e-7,   std::complex<double>(0, -1.4370869519524496369e-7),
         4.4978579841297345023e-8,    std::complex<double>(0, 1.35960020237312162173e-8),
         -4.3910914593632557649e-9};
+
+    // Coefficients for the function std::exp(1i * Pi/2.0 * x) in [-16, 16] of degree 58
+    // Need two double-angle iterations to get std::exp(1i * 2Pi * x)
+    static const inline std::vector<std::complex<double>> coeff_exp_16_double_58{
+        0.223935669067774064731258,        -0.221763849140364071791725i,       0.241583075462661217842965,
+        -0.183314708513139169201897i,      0.285346238464635286716343,         -0.0924861798244883192674491i,
+        0.322145320181518379231666,        0.061326880477941559726121i,        0.287983653577872483341144,
+        0.244662968464271142481788i,       0.11275670987605882749153,          0.334391907182038619823369i,
+        -0.179953977392653543137199,       0.162548516995510653110212i,        -0.348111577211254661835152,
+        -0.225277230829299501439841i,      -0.0792066908172276744621837,       -0.326126321785405256598582i,
+        0.361982546751237542897619,        0.192375482870667729361019i,        0.07111621097994596280793,
+        0.305560447984912948764911i,       -0.439514073976869121644077,        -0.463898763765719550781842i,
+        0.409551411519768349209364,        0.318286815357890122832357i,        -0.223660088295051661637745,
+        -0.144469096760963910093417i,      0.0867450184975862188914434,        0.0488134819938784905957201i,
+        -0.0259041322607821192532301,      -0.0130280784432671332603778i,      0.00623485552935927979411131,
+        0.00284885078811470905152283i,     -0.00124638777412573219460687,      -0.000523418391329346038023612i,
+        0.00021144315086655356062863,      0.0000823216162507266560541546i,    -0.0000309418539013655129280006,
+        -0.0000112448146890351337760345i,  0.00000395666901592424859328255,    0.00000134965395222265232249375i,
+        -0.000000446814992250582471253067, -0.000000143715155726536959544726i, 4.49540225180646450469594e-8,
+        1.36872519769789614574657e-8i,     -4.05983819524702216787292e-9,      -1.17404431233842426606987e-9i,
+        3.31253264116235181580997e-10,     9.12499532477369846286744e-11i,     -2.45573232327438228110746e-11,
+        -6.46053129176685917285975e-12i,   1.6624267665628375281654e-12,       4.18638070275724144942236e-13i,
+        -1.03223722985405713818257e-13,    -2.49329270784064713751602e-14i,    5.90309868613415680860583e-15,
+        1.36673601403325773352304e-15i,    -3.2721888496590447789792e-16,
+    };
 
     // Coefficients for the function std::exp(1i * Pi/2.0 * x) in [-25, 25] of degree 66
     // Need two double-angle iterations to get std::exp(1i * 2Pi * x)

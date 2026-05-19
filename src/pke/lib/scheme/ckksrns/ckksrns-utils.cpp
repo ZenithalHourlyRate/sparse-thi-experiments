@@ -349,6 +349,58 @@ std::vector<uint32_t> ComputeDegreesPS(uint32_t n) {
     return std::vector<uint32_t>{klist[minIndex], mlist[minIndex]};
 }
 
+std::vector<uint32_t> ComputeDegreesPSMultiEval(uint32_t n, uint32_t nPoly) {
+    if (n == 0)
+        OPENFHE_THROW("ComputeDegreesPS: The degree is zero. There is no need to evaluate the polynomial.");
+
+    std::vector<uint32_t> klist;
+    std::vector<uint32_t> mlist;
+    std::vector<uint32_t> multlist;
+    for (uint32_t k = 1; k <= n; ++k) {
+        for (uint32_t m = 1; m <= static_cast<uint32_t>(std::ceil(log2(n / k) + 1) + 1); ++m) {
+            if (n < (k * ((1U << m) - 1))) {
+                klist.push_back(k);
+                mlist.push_back(m);
+                multlist.push_back(k - 1 + 2 * (m - 1) + nPoly * ((1U << (m - 1)) - 1));
+            }
+        }
+    }
+    uint32_t minIndex = std::min_element(multlist.begin(), multlist.end()) - multlist.begin();
+    return std::vector<uint32_t>{klist[minIndex], mlist[minIndex]};
+}
+
+std::vector<uint32_t> ComputeDegreesPSHybridMultiEval(uint32_t n, uint32_t nPoly, uint32_t p) {
+    if (n == 0)
+        OPENFHE_THROW("ComputeDegreesPS: The degree is zero. There is no need to evaluate the polynomial.");
+
+    uint32_t logp = static_cast<uint32_t>(std::log2(p));
+
+    std::vector<uint32_t> klist;
+    std::vector<uint32_t> mlist;
+    std::vector<uint32_t> multlist;
+    for (uint32_t k = 1; k <= n; ++k) {
+        for (uint32_t m = 1; m <= static_cast<uint32_t>(std::ceil(log2(n / k) + 1) + 1); ++m) {
+            if (n < (k * ((1U << m) - 1))) {
+                auto logkFloor = static_cast<uint32_t>(std::log2(k));
+                klist.push_back(k);
+                mlist.push_back(m);
+                multlist.push_back(k - 1 + 2 * (m - 1) +
+                                   nPoly * ((1U << (m - 1)) - 1)  // for PS
+                                   // prepare z^p from the largest power-of-two z^u, then chain to z^{np}
+                                   + (logp - logkFloor));  // other terms does not depend on k
+            }
+        }
+    }
+    uint32_t minIndex = std::min_element(multlist.begin(), multlist.end()) - multlist.begin();
+    return std::vector<uint32_t>{klist[minIndex], mlist[minIndex]};
+}
+
+uint32_t GetDepthByDegreeHybridMultiEval(size_t d, size_t nPoly, uint32_t p) {
+    if (d == 0)
+        return 0;
+    return static_cast<uint32_t>(std::ceil(std::log2(nPoly - 1)) + std::ceil(std::log2(p)) + 1);
+}
+
 std::vector<std::complex<double>> ExtractShiftedDiagonal(const std::vector<std::vector<std::complex<double>>>& A,
                                                          int index) {
     uint32_t cols = A[0].size();

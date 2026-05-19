@@ -420,12 +420,20 @@ void ParameterGenerationCKKSRNS::SinglePrimeModuliGen(std::vector<NativeInteger>
     moduliQ[numPrimes - 1] = q;
     rootsQ[numPrimes - 1]  = RootOfUnity(cyclOrder, moduliQ[numPrimes - 1]);
 
-    NativeInteger maxPrime{q};
+    NativeInteger q0 = q;
+    if (scalTech == FIXEDMANUAL || scalTech == FLEXIBLEMANUAL) {
+        if (firstModSize == dcrtBits) {  // this requires dcrtBits < 60
+            moduliQ[0] = NextPrime<NativeInteger>(q, cyclOrder);
+        }
+        q0 = moduliQ[0];
+    }
+
+    NativeInteger maxPrime{q0};
     NativeInteger minPrime{q};
     if (numPrimes > 1) {
-        if (scalTech != FLEXIBLEAUTO && scalTech != FLEXIBLEAUTOEXT) {
+        if (scalTech != FLEXIBLEAUTO && scalTech != FLEXIBLEAUTOEXT && scalTech != FLEXIBLEMANUAL) {
             NativeInteger qPrev = q;
-            NativeInteger qNext = q;
+            NativeInteger qNext = q0;
             for (size_t i = numPrimes - 2, cnt = 0; i >= 1; --i, ++cnt) {
                 if ((cnt % 2) == 0) {
                     qPrev      = PreviousPrime(qPrev, cyclOrder);
@@ -469,6 +477,10 @@ void ParameterGenerationCKKSRNS::SinglePrimeModuliGen(std::vector<NativeInteger>
                                 hasSameMod = true;
                                 break;
                             }
+                            if (qPrev == moduliQ[0]) {
+                                hasSameMod = true;
+                                break;
+                            }
                         }
                     }
                     moduliQ[i] = qPrev;
@@ -480,6 +492,10 @@ void ParameterGenerationCKKSRNS::SinglePrimeModuliGen(std::vector<NativeInteger>
                         qNext      = NextPrime(qNext, cyclOrder);
                         for (size_t j = i + 1; j < numPrimes; j++) {
                             if (qNext == moduliQ[j]) {
+                                hasSameMod = true;
+                                break;
+                            }
+                            if (qNext == moduliQ[0]) {
                                 hasSameMod = true;
                                 break;
                             }
@@ -497,10 +513,12 @@ void ParameterGenerationCKKSRNS::SinglePrimeModuliGen(std::vector<NativeInteger>
         }
     }
 
-    if (firstModSize == dcrtBits) {  // this requires dcrtBits < 60
-        moduliQ[0] = NextPrime<NativeInteger>(maxPrime, cyclOrder);
-    }
-    else {
+    //if (scalTech == FLEXIBLEMANUAL) {
+    //    if (firstModSize == dcrtBits) {  // this requires dcrtBits < 60
+    //        moduliQ[0] = NextPrime<NativeInteger>(maxPrime, cyclOrder);
+    //    }
+    //}
+    if (firstModSize != dcrtBits) {
         moduliQ[0] = LastPrime<NativeInteger>(firstModSize, cyclOrder);
 
         // find if the value of moduliQ[0] is already in the vector starting with moduliQ[1] and

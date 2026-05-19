@@ -185,6 +185,10 @@ public:
         OPENFHE_THROW(NOT_SUPPORTED_SIMPLE_ERROR);
     }
 
+    virtual Ciphertext<Element> EvalBootstrapSlotsToCoeffs(ConstCiphertext<DCRTPoly>& ciphertext) {
+        OPENFHE_THROW(NOT_SUPPORTED_SIMPLE_ERROR);
+    }
+
     virtual std::shared_ptr<seriesPowers<DCRTPoly>> EvalMVBPrecompute(ConstCiphertext<DCRTPoly>& ciphertext,
                                                                       const std::vector<std::complex<double>>& coeffs,
                                                                       uint32_t digitBitSize,

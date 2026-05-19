@@ -47,6 +47,8 @@ CKKS implementation. See https://eprint.iacr.org/2020/1118 for details.
 
 namespace lbcrypto {
 
+uint32_t KeySwitchCounter = 0;
+
 /////////////////////////////////////////
 // SHE ADDITION CONSTANT
 /////////////////////////////////////////
@@ -131,7 +133,7 @@ Ciphertext<DCRTPoly> LeveledSHECKKSRNS::EvalMult(ConstCiphertext<DCRTPoly>& ciph
 
 void LeveledSHECKKSRNS::EvalMultInPlace(Ciphertext<DCRTPoly>& ciphertext, double operand) const {
     const auto cryptoParams = std::dynamic_pointer_cast<CryptoParametersCKKSRNS>(ciphertext->GetCryptoParameters());
-    if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL) {
+    if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL && cryptoParams->GetScalingTechnique() != FLEXIBLEMANUAL) {
         if (ciphertext->GetNoiseScaleDeg() == 2)
             ModReduceInternalInPlace(ciphertext, cryptoParams->GetCompositeDegree());
     }
@@ -147,7 +149,7 @@ Ciphertext<DCRTPoly> LeveledSHECKKSRNS::EvalMult(ConstCiphertext<DCRTPoly>& ciph
 
 void LeveledSHECKKSRNS::EvalMultInPlace(Ciphertext<DCRTPoly>& ciphertext, std::complex<double> operand) const {
     const auto cryptoParams = std::dynamic_pointer_cast<CryptoParametersCKKSRNS>(ciphertext->GetCryptoParameters());
-    if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL) {
+    if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL && cryptoParams->GetScalingTechnique() != FLEXIBLEMANUAL) {
         if (ciphertext->GetNoiseScaleDeg() == 2)
             ModReduceInternalInPlace(ciphertext, cryptoParams->GetCompositeDegree());
     }

@@ -198,6 +198,8 @@ public:
     }
 };
 
+extern uint32_t KeySwitchCounter;
+
 }  // namespace lbcrypto
 
 #endif

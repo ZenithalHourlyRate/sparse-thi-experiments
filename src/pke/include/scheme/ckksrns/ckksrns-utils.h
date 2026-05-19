@@ -127,7 +127,15 @@ std::shared_ptr<longDiv<VecDType>> LongDivisionChebyshev(const std::vector<VecDT
  */
 std::vector<uint32_t> ComputeDegreesPS(uint32_t n);
 
+std::vector<uint32_t> ComputeDegreesPSMultiEval(uint32_t n, uint32_t nPoly);
+
+std::vector<uint32_t> ComputeDegreesPSHybridMultiEval(uint32_t n, uint32_t nPoly, uint32_t p);
+
 uint32_t GetDepthByDegree(size_t degree);
+
+uint32_t GetDepthByDegreeHybridMultiEval(size_t d, size_t nPoly, uint32_t p);
+
+uint32_t GetDepthByDegreeBKSS24MultiEval(size_t d, size_t nPoly);
 
 /**
  * Get the depth for a given vector of coefficients for the Paterson-Stockmeyer algorithm.

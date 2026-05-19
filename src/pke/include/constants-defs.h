@@ -57,6 +57,7 @@ enum ScalingTechnique {
     COMPOSITESCALINGAUTO,
     COMPOSITESCALINGMANUAL,
     NORESCALE,
+    FLEXIBLEMANUAL,
     INVALID_RS_TECHNIQUE,  // TODO (dsuponit): make this the first value
 };
 

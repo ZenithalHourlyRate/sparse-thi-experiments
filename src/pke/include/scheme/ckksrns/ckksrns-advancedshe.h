@@ -32,6 +32,7 @@
 #ifndef LBCRYPTO_CRYPTO_CKKSRNS_ADVANCEDSHE_H
 #define LBCRYPTO_CRYPTO_CKKSRNS_ADVANCEDSHE_H
 
+#include "math/hermite.h"
 #include "schemerns/rns-advancedshe.h"
 
 #include <complex>
@@ -80,6 +81,23 @@ public:
                                                        const std::vector<double>& coefficients) const override;
     std::shared_ptr<seriesPowers<DCRTPoly>> EvalPowers(
         ConstCiphertext<DCRTPoly>& x, const std::vector<std::complex<double>>& coefficients) const override;
+
+    // CUSTOM
+    std::shared_ptr<seriesPowers<DCRTPoly>> EvalPowersMultiPolynomial(ConstCiphertext<DCRTPoly>& x, uint32_t d,
+                                                                      uint32_t nPoly,
+                                                                      InterpolationMethod method   = HERMITE_INVALID,
+                                                                      uint32_t p                   = 0,
+                                                                      uint32_t auxiliaryPowerCount = 0) const;
+
+    // CUSTOM: plain HK20-style BSGS precompute/evaluation for BKSS24.
+    std::shared_ptr<seriesPowers<DCRTPoly>> EvalPowersMultiPolynomialBSGS(ConstCiphertext<DCRTPoly>& x, uint32_t degree,
+                                                                          uint32_t l = 0, uint32_t m = 0) const;
+    Ciphertext<DCRTPoly> EvalPolyBSGSWithPrecomp(std::shared_ptr<seriesPowers<DCRTPoly>> powers,
+                                                 const std::vector<std::complex<double>>& coefficients) const;
+
+    // CUSTOM
+    std::shared_ptr<seriesPowers<DCRTPoly>> internalEvalChebyPolysPS(ConstCiphertext<DCRTPoly>& x, uint32_t degree,
+                                                                     double a, double b) const;
 
     Ciphertext<DCRTPoly> EvalPoly(ConstCiphertext<DCRTPoly>& ciphertext,
                                   const std::vector<int64_t>& coefficients) const override;

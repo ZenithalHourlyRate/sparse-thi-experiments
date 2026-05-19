@@ -1,4 +1,3 @@
-//==================================================================================
 // BSD 2-Clause License
 //
 // Copyright (c) 2014-2022, NJIT, Duality Technologies Inc. and other contributors
@@ -34,6 +33,7 @@ CKKS implementation. See https://eprint.iacr.org/2020/1118 for details.
  */
 
 #include "cryptocontext.h"
+#include "math/hermite.h"
 #include "scheme/ckksrns/ckksrns-cryptoparameters.h"
 #include "scheme/ckksrns/ckksrns-advancedshe.h"
 #include "scheme/ckksrns/ckksrns-utils.h"
@@ -41,6 +41,12 @@ CKKS implementation. See https://eprint.iacr.org/2020/1118 for details.
 
 #include <complex>
 #include <vector>
+
+double __debug(lbcrypto::ConstCiphertext<lbcrypto::DCRTPoly> ct, std::string msg) __attribute__((weak));
+
+double __debug(lbcrypto::ConstCiphertext<lbcrypto::DCRTPoly> ct, std::string msg) {
+    return 0.0;
+}
 
 namespace lbcrypto {
 
@@ -104,7 +110,8 @@ Ciphertext<DCRTPoly> internalEvalLinearWSumMutable(std::vector<Ciphertext<DCRTPo
 
     const uint32_t limit = ciphertexts.size();
 
-    if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL) {
+    if ((cryptoParams->GetScalingTechnique()) != FIXEDMANUAL &&
+        (cryptoParams->GetScalingTechnique() != FLEXIBLEMANUAL)) {
         // Check to see if input ciphertexts are of same level
         // and adjust if needed to the max level among them
         uint32_t maxLevel = ciphertexts[0]->GetLevel();
@@ -284,11 +291,10 @@ std::shared_ptr<seriesPowers<DCRTPoly>> internalEvalPowersLinear(ConstCiphertext
     return std::make_shared<seriesPowers<DCRTPoly>>(std::move(powers));
 }
 
-std::shared_ptr<seriesPowers<DCRTPoly>> internalEvalPowersPS(ConstCiphertext<DCRTPoly>& x, uint32_t degree) {
-    auto degs  = ComputeDegreesPS(degree);
-    uint32_t k = degs[0];
-    uint32_t m = degs[1];
-
+std::shared_ptr<seriesPowers<DCRTPoly>> internalEvalPowersPS(ConstCiphertext<DCRTPoly>& x, uint32_t k, uint32_t m,
+                                                             InterpolationMethod method = HERMITE_INVALID,
+                                                             uint32_t p = 0, uint32_t nPoly = 0,
+                                                             uint32_t auxiliaryPowerCount = 0) {
     std::vector<Ciphertext<DCRTPoly>> powers(k);
     powers[0] = x->Clone();
 
@@ -316,6 +322,12 @@ std::shared_ptr<seriesPowers<DCRTPoly>> internalEvalPowersPS(ConstCiphertext<DCR
         cc->ModReduceInPlace(powers[i - 1]);
     }
 
+    Ciphertext<DCRTPoly> hybridStart;
+    if (method == HERMITE_SPARSE_THI) {  // first find the largest power-of-two <= k
+        auto logkFloor = static_cast<uint32_t>(std::floor(std::log2(k)));
+        hybridStart    = powers[(1l << logkFloor) - 1]->Clone();  // powers contain 1, 2, ... k
+    }
+
     const auto cryptoParams = std::dynamic_pointer_cast<CryptoParametersCKKSRNS>(powers[k - 1]->GetCryptoParameters());
     if (cryptoParams->GetScalingTechnique() == FIXEDMANUAL) {
         // brings all powers of x to the same level
@@ -325,7 +337,11 @@ std::shared_ptr<seriesPowers<DCRTPoly>> internalEvalPowersPS(ConstCiphertext<DCR
     }
     else {
         for (uint32_t i = 1; i < k; ++i)
-            cc->GetScheme()->AdjustLevelsAndDepthInPlace(powers[i - 1], powers[k - 1]);
+            //cc->GetScheme()->AdjustLevelsAndDepthInPlace(powers[i - 1], powers[k - 1]);
+            while (powers[i - 1]->GetLevel() < powers[k - 1]->GetLevel()) {
+                powers[i - 1] = cc->EvalMult(powers[i - 1], 1.0);
+                cc->ModReduceInPlace(powers[i - 1]);
+            }
     }
 
     // computes powers of form k*2^i for x and the product of the powers in power2, that yield x^{k(2*m - 1)}
@@ -341,7 +357,228 @@ std::shared_ptr<seriesPowers<DCRTPoly>> internalEvalPowersPS(ConstCiphertext<DCR
         cc->ModReduceInPlace(power2km1);
     }
 
-    return std::make_shared<seriesPowers<DCRTPoly>>(std::move(powers), std::move(powers2), std::move(power2km1), k, m);
+    auto ret =
+        std::make_shared<seriesPowers<DCRTPoly>>(std::move(powers), std::move(powers2), std::move(power2km1), k, m);
+    if (method == HERMITE_SPARSE_THI) {
+        auto logkFloor = static_cast<uint32_t>(std::floor(std::log2(k)));
+        auto logp      = static_cast<uint32_t>(std::floor(std::log2(p)));
+
+        for (size_t i = 0; i != logp - logkFloor; ++i) {
+            cc->EvalSquareInPlace(hybridStart);
+            cc->ModReduceInPlace(hybridStart);
+        }
+        // We obtain z^p first, then chain it to z^{2p}, ..., z^{np}.
+        const uint32_t auxCount = (auxiliaryPowerCount == 0) ? (nPoly > 1 ? nPoly - 1 : 0) : auxiliaryPowerCount;
+        if (auxCount > 0) {
+            ret->auxiliaryPowersRe.resize(auxCount);
+            ret->auxiliaryPowersRe[0] = hybridStart;
+
+            uint32_t auxPowerOf2 = 2;
+            uint32_t auxRem      = 0;
+            for (uint32_t ell = 2; ell <= auxCount; ++ell) {
+                if (auxRem == 0) {
+                    ret->auxiliaryPowersRe[ell - 1] = cc->EvalSquare(ret->auxiliaryPowersRe[(auxPowerOf2 >> 1) - 1]);
+                }
+                else {
+                    ret->auxiliaryPowersRe[ell - 1] =
+                        cc->EvalMult(ret->auxiliaryPowersRe[auxPowerOf2 - 1], ret->auxiliaryPowersRe[auxRem - 1]);
+                }
+
+                if (++auxRem == auxPowerOf2) {
+                    auxPowerOf2 <<= 1;
+                    auxRem = 0;
+                }
+                cc->ModReduceInPlace(ret->auxiliaryPowersRe[ell - 1]);
+            }
+
+            if (!ret->auxiliaryPowersRe.empty()) {
+                if (cryptoParams->GetScalingTechnique() == FIXEDMANUAL) {
+                    uint32_t targetLevel = ret->auxiliaryPowersRe[auxCount - 1]->GetLevel();
+                    for (uint32_t ell = 0; ell < ret->auxiliaryPowersRe.size(); ++ell)
+                        cc->LevelReduceInPlace(ret->auxiliaryPowersRe[ell], nullptr,
+                                               targetLevel - ret->auxiliaryPowersRe[ell]->GetLevel());
+                }
+                else {
+                    for (uint32_t ell = 0; ell < ret->auxiliaryPowersRe.size(); ++ell)
+                        while (ret->auxiliaryPowersRe[ell]->GetLevel() <
+                               ret->auxiliaryPowersRe[auxCount - 1]->GetLevel()) {
+                            ret->auxiliaryPowersRe[ell] = cc->EvalMult(ret->auxiliaryPowersRe[ell], 1.0);
+                            cc->ModReduceInPlace(ret->auxiliaryPowersRe[ell]);
+                        }
+                    //cc->GetScheme()->AdjustLevelsAndDepthInPlace(ret->auxiliaryPowersRe[ell],
+                    //                                             ret->auxiliaryPowersRe[auxCount - 1]);
+                }
+            }
+        }
+        return ret;
+    }
+    else {
+        return ret;
+    }
+}
+
+std::shared_ptr<seriesPowers<DCRTPoly>> internalEvalPowersPS(ConstCiphertext<DCRTPoly>& x, uint32_t degree) {
+    auto degs  = ComputeDegreesPS(degree);
+    uint32_t k = degs[0];
+    uint32_t m = degs[1];
+    return internalEvalPowersPS(x, k, m);
+}
+
+static inline std::pair<uint32_t, uint32_t> ComputeDegreesBSGSHK20(uint32_t degree, uint32_t l, uint32_t m) {
+    if (degree == 0)
+        return {0, 0};
+
+    if (m == 0)
+        m = static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(degree) + 1.0)));
+    if (l == 0) {
+        // Multi-evaluation trick for BKSS24: choose |bs| around sqrt(4 * d)
+        // instead of the standard sqrt(d), so lower-degree branches align with
+        // the higher-degree branches.
+        auto bsTarget = std::sqrt(4.0 * static_cast<double>(degree));
+        l             = static_cast<uint32_t>(std::ceil(std::log2(bsTarget)));
+        if (l >= m)
+            l = m - 1;
+    }
+
+    if (l >= m)
+        OPENFHE_THROW("BSGS requires l < m.");
+    if ((1u << m) <= degree)
+        OPENFHE_THROW("BSGS parameters must satisfy 2^m > degree.");
+
+    return {l, m};
+}
+
+std::shared_ptr<seriesPowers<DCRTPoly>> internalEvalPowersBSGSHK20(ConstCiphertext<DCRTPoly>& x, uint32_t degree,
+                                                                   uint32_t l, uint32_t m) {
+    auto [resolvedL, resolvedM] = ComputeDegreesBSGSHK20(degree, l, m);
+    if (resolvedM == 0)
+        return std::make_shared<seriesPowers<DCRTPoly>>();
+
+    const uint32_t babyStep = 1u << resolvedL;
+    std::vector<Ciphertext<DCRTPoly>> powers(babyStep);
+    powers[0] = x->Clone();
+
+    auto cc = x->GetCryptoContext();
+    uint32_t compositeDegree =
+        std::dynamic_pointer_cast<CryptoParametersCKKSRNS>(x->GetCryptoParameters())->GetCompositeDegree();
+
+    // Build x, x^2, ..., x^(2^l) using the same balanced recurrence as PS.
+    uint32_t powerOf2 = 2;
+    uint32_t rem      = 0;
+    for (uint32_t i = 2; i <= babyStep; ++i) {
+        if (rem == 0) {
+            powers[i - 1] = cc->EvalSquare(powers[(powerOf2 >> 1) - 1]);
+        }
+        else {
+            uint32_t diff = powers[powerOf2 - 1]->GetLevel() - powers[rem - 1]->GetLevel();
+            cc->LevelReduceInPlace(powers[rem - 1], nullptr, diff / compositeDegree);
+            powers[i - 1] = cc->EvalMult(powers[powerOf2 - 1], powers[rem - 1]);
+        }
+
+        if (++rem == powerOf2) {
+            powerOf2 <<= 1;
+            rem = 0;
+        }
+        cc->ModReduceInPlace(powers[i - 1]);
+    }
+
+    const auto cryptoParams = std::dynamic_pointer_cast<CryptoParametersCKKSRNS>(powers.back()->GetCryptoParameters());
+    if (cryptoParams->GetScalingTechnique() == FIXEDMANUAL) {
+        uint32_t levelk = powers.back()->GetLevel();
+        for (uint32_t i = 1; i < babyStep; ++i)
+            cc->LevelReduceInPlace(powers[i - 1], nullptr, levelk - powers[i - 1]->GetLevel());
+    }
+    else {
+        for (uint32_t i = 1; i < babyStep; ++i)
+            //cc->GetScheme()->AdjustLevelsAndDepthInPlace(powers[i - 1], powers.back());
+            while (powers[i - 1]->GetLevel() < powers.back()->GetLevel()) {
+                powers[i - 1] = cc->EvalMult(powers[i - 1], 1.0);
+                cc->ModReduceInPlace(powers[i - 1]);
+            }
+    }
+
+    std::vector<Ciphertext<DCRTPoly>> giantPowers(resolvedM - resolvedL);
+    giantPowers[0] = powers.back()->Clone();
+    for (uint32_t i = 1; i < giantPowers.size(); ++i) {
+        giantPowers[i] = cc->EvalSquare(giantPowers[i - 1]);
+        cc->ModReduceInPlace(giantPowers[i]);
+    }
+
+    return std::make_shared<seriesPowers<DCRTPoly>>(std::move(powers), std::move(giantPowers), Ciphertext<DCRTPoly>{},
+                                                    babyStep, resolvedM);
+}
+
+template <typename VectorDataType>
+static Ciphertext<DCRTPoly> internalEvalPolyBSGSWithPrecomp(const std::shared_ptr<seriesPowers<DCRTPoly>>& ctxtPowers,
+                                                            const std::vector<VectorDataType>& coefficients) {
+    uint32_t degree = Degree(coefficients);
+    auto cc         = ctxtPowers->powersRe[0]->GetCryptoContext();
+    auto algo       = cc->GetScheme();
+    const auto cryptoParams =
+        std::dynamic_pointer_cast<CryptoParametersCKKSRNS>(ctxtPowers->powersRe[0]->GetCryptoParameters());
+    const uint32_t babyStep = ctxtPowers->k;
+    const uint32_t l        = static_cast<uint32_t>(std::log2(babyStep));
+
+    auto alignForFixedManual = [&](Ciphertext<DCRTPoly>& lhs, Ciphertext<DCRTPoly>& rhs) {
+        uint32_t targetLevel = std::max(lhs->GetLevel(), rhs->GetLevel());
+        if (lhs->GetLevel() < targetLevel)
+            cc->LevelReduceInPlace(lhs, nullptr, targetLevel - lhs->GetLevel());
+        if (rhs->GetLevel() < targetLevel)
+            cc->LevelReduceInPlace(rhs, nullptr, targetLevel - rhs->GetLevel());
+    };
+
+    if (degree == 0) {
+        auto result = cc->EvalMult(ctxtPowers->powersRe[0], 0.0);
+        cc->ModReduceInPlace(result);
+        cc->EvalAddInPlace(result, coefficients[0]);
+        return result;
+    }
+
+    if (degree < babyStep) {
+        std::vector<VectorDataType> coeffs(coefficients.begin(), coefficients.begin() + degree + 1);
+        auto result = EvalPartialLinearWSum(ctxtPowers->powersRe, coeffs, degree);
+        cc->EvalAddInPlace(result, coeffs[0]);
+        return result;
+    }
+
+    uint32_t currentM = static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(degree) + 1.0)));
+    uint32_t split    = 1u << (currentM - 1);
+
+    std::vector<VectorDataType> remainder(coefficients.begin(), coefficients.begin() + split);
+    std::vector<VectorDataType> quotient(coefficients.begin() + split, coefficients.begin() + degree + 1);
+
+    auto giant = ctxtPowers->powers2Re[currentM - 1 - l]->Clone();
+    Ciphertext<DCRTPoly> term;
+
+    if (Degree(quotient) == 0) {
+        term = cc->EvalMult(giant, quotient[0]);
+        cc->ModReduceInPlace(term);
+    }
+    else {
+        auto quotientEval = internalEvalPolyBSGSWithPrecomp(ctxtPowers, quotient);
+        if (cryptoParams->GetScalingTechnique() == FIXEDMANUAL)
+            alignForFixedManual(quotientEval, giant);
+        else
+            //algo->AdjustLevelsAndDepthInPlace(quotientEval, giant);
+            while (quotientEval->GetLevel() < giant->GetLevel()) {
+                quotientEval = cc->EvalMult(quotientEval, 1.0);
+                cc->ModReduceInPlace(quotientEval);
+            }
+        term = cc->EvalMult(quotientEval, giant);
+        cc->ModReduceInPlace(term);
+    }
+
+    if (Degree(remainder) == 0) {
+        cc->EvalAddInPlace(term, remainder[0]);
+        return term;
+    }
+
+    auto remainderEval = internalEvalPolyBSGSWithPrecomp(ctxtPowers, remainder);
+    if (cryptoParams->GetScalingTechnique() == FIXEDMANUAL)
+        alignForFixedManual(term, remainderEval);
+    else
+        algo->AdjustLevelsAndDepthInPlace(term, remainderEval);
+    return cc->EvalAdd(term, remainderEval);
 }
 
 std::shared_ptr<seriesPowers<DCRTPoly>> AdvancedSHECKKSRNS::EvalPowers(ConstCiphertext<DCRTPoly>& x,
@@ -358,6 +595,31 @@ std::shared_ptr<seriesPowers<DCRTPoly>> AdvancedSHECKKSRNS::EvalPowers(
     ConstCiphertext<DCRTPoly>& x, const std::vector<std::complex<double>>& coefficients) const {
     uint32_t d = Degree(coefficients);
     return (d < 5) ? internalEvalPowersLinear(x, coefficients) : internalEvalPowersPS(x, d);
+}
+
+std::shared_ptr<seriesPowers<DCRTPoly>> AdvancedSHECKKSRNS::EvalPowersMultiPolynomial(
+    ConstCiphertext<DCRTPoly>& x, uint32_t d, uint32_t nPoly, InterpolationMethod method, uint32_t p,
+    uint32_t auxiliaryPowerCount) const {
+    if (method == HERMITE_SPARSE_THI) {
+        // Now compute k and m
+        auto degs  = ComputeDegreesPSHybridMultiEval(d, nPoly, p);
+        uint32_t k = degs[0];
+        uint32_t m = degs[1];
+        return internalEvalPowersPS(x, k, m, method, p, nPoly, auxiliaryPowerCount);
+    }
+    else {
+        // Now compute k and m
+        auto degs  = ComputeDegreesPSMultiEval(d, nPoly);
+        uint32_t k = degs[0];
+        uint32_t m = degs[1];
+        return internalEvalPowersPS(x, k, m, method, p);
+    }
+}
+
+std::shared_ptr<seriesPowers<DCRTPoly>> AdvancedSHECKKSRNS::EvalPowersMultiPolynomialBSGS(ConstCiphertext<DCRTPoly>& x,
+                                                                                          uint32_t degree, uint32_t l,
+                                                                                          uint32_t m) const {
+    return internalEvalPowersBSGSHK20(x, degree, l, m);
 }
 
 template <typename VectorDataType>
@@ -536,6 +798,11 @@ Ciphertext<DCRTPoly> AdvancedSHECKKSRNS::EvalPolyWithPrecomp(std::shared_ptr<ser
                                                              const std::vector<std::complex<double>>& coeffs) const {
     return (Degree(coeffs) < 5) ? internalEvalPolyLinearWithPrecomp(ctxtPowers->powersRe, coeffs) :
                                   internalEvalPolyPSWithPrecomp(ctxtPowers, coeffs);
+}
+
+Ciphertext<DCRTPoly> AdvancedSHECKKSRNS::EvalPolyBSGSWithPrecomp(
+    std::shared_ptr<seriesPowers<DCRTPoly>> ctxtPowers, const std::vector<std::complex<double>>& coeffs) const {
+    return internalEvalPolyBSGSWithPrecomp(ctxtPowers, coeffs);
 }
 
 Ciphertext<DCRTPoly> AdvancedSHECKKSRNS::EvalPolyLinear(ConstCiphertext<DCRTPoly>& x,
@@ -760,8 +1027,9 @@ Ciphertext<DCRTPoly> InnerEvalChebyshevPS(ConstCiphertext<DCRTPoly>& x, const st
     return result;
 }
 
-std::shared_ptr<seriesPowers<DCRTPoly>> internalEvalChebyPolysPS(ConstCiphertext<DCRTPoly>& x, uint32_t degree,
-                                                                 double a, double b) {
+std::shared_ptr<seriesPowers<DCRTPoly>> AdvancedSHECKKSRNS::internalEvalChebyPolysPS(ConstCiphertext<DCRTPoly>& x,
+                                                                                     uint32_t degree, double a,
+                                                                                     double b) const {
     auto degs  = ComputeDegreesPS(degree);
     uint32_t k = degs[0];
     uint32_t m = degs[1];
@@ -813,7 +1081,11 @@ std::shared_ptr<seriesPowers<DCRTPoly>> internalEvalChebyPolysPS(ConstCiphertext
     }
     else {
         for (uint32_t i = 1; i < k; ++i)
-            cc->GetScheme()->AdjustLevelsAndDepthInPlace(T[i - 1], T[k - 1]);
+            //cc->GetScheme()->AdjustLevelsAndDepthInPlace(T[i - 1], T[k - 1]);
+            while (T[i - 1]->GetLevel() < T[k - 1]->GetLevel()) {
+                T[i - 1] = cc->EvalMult(T[i - 1], 1.0);
+                cc->ModReduceInPlace(T[i - 1]);
+            }
     }
 
     std::vector<Ciphertext<DCRTPoly>> T2(m);

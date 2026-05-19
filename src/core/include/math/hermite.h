@@ -54,9 +54,53 @@ namespace lbcrypto {
  * @return the coefficients of the intermediate Hermite trigonometric interpolation.
  */
 
+enum InterpolationMethod {
+    HERMITE_INVALID = -1,
+    HERMITE_AKP25   = 0,
+    HERMITE_BKSS24,
+    HERMITE_FULL_THI,
+    HERMITE_SPARSE_THI,
+};
+
+std::ostream& operator<<(std::ostream& s, InterpolationMethod m);
+
 // TODO: templatize this
 std::vector<std::complex<double>> GetHermiteTrigCoefficients(std::function<int64_t(int64_t)> func, uint32_t p,
                                                              size_t order, double scale);
+
+std::vector<std::complex<double>> GetHermiteTrigCoefficientsForComplexLUT(
+    std::function<std::complex<double>(int64_t)> func, uint32_t p, size_t order, double scale);
+
+std::vector<std::complex<double>> GetHermiteTrigCoefficientsFullTHI(std::function<int64_t(int64_t)> func, uint32_t p,
+                                                                    size_t order, double scale);
+
+std::vector<std::complex<double>> GetHermiteTrigCoefficientsFullTHIForComplexLUT(
+    std::function<std::complex<double>(int64_t)> func, uint32_t p, size_t order, double scale);
+
+std::vector<std::complex<double>> GetHermiteTrigCoefficientsSparseTHI(std::function<int64_t(int64_t)> func, uint32_t p,
+                                                                      size_t order, double scale);
+
+std::vector<std::complex<double>> GetHermiteTrigCoefficientsSparseTHIForComplexLUT(
+    std::function<std::complex<double>(int64_t)> func, uint32_t p, size_t order, double scale);
+
+std::vector<std::complex<double>> GetHermiteTrigCoefficientsBKSS(std::function<int64_t(int64_t)> func, uint32_t p,
+                                                                 double scale);
+
+std::vector<std::complex<double>> GetHermiteTrigCoefficientsBKSSForComplexLUT(
+    std::function<std::complex<double>(int64_t)> func, uint32_t p, double scale);
+
+double GetHermiteTrigAKPThreshold(std::function<double(int64_t)> func, uint32_t p, size_t order, double scale);
+double GetHermiteTrigSparseTHIThreshold(std::function<double(int64_t)> func, uint32_t p, size_t order, double scale);
+
+double GetHermiteTrigAKPThresholdForComplexLUT(std::function<std::complex<double>(int64_t)> func, uint32_t p,
+                                               size_t order, double scale);
+double GetHermiteTrigSparseTHIThresholdForComplexLUT(std::function<std::complex<double>(int64_t)> func, uint32_t p,
+                                                     size_t order, double scale);
+
+double GetHermiteTrigFullTHIThreshold(std::function<std::complex<double>(int64_t)> func, uint32_t p, size_t order,
+                                      double scale);
+
+double PredictHermiteTrigNoise(double t_bits, size_t order, double inputPrec);
 
 }  // namespace lbcrypto
 

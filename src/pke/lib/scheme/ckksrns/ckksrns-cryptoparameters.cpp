@@ -84,7 +84,7 @@ void CryptoParametersCKKSRNS::PrecomputeCRTTables(KeySwitchTechnique ksTech, Sca
     }
 
     // Pre-compute scaling factors for each level (used in FLEXIBLE* scaling techniques)
-    if (m_scalTechnique == FLEXIBLEAUTO || m_scalTechnique == FLEXIBLEAUTOEXT ||
+    if (m_scalTechnique == FLEXIBLEAUTO || m_scalTechnique == FLEXIBLEAUTOEXT || m_scalTechnique == FLEXIBLEMANUAL ||
         m_scalTechnique == COMPOSITESCALINGAUTO || m_scalTechnique == COMPOSITESCALINGMANUAL) {
         m_scalingFactorsReal.resize(sizeQ);
 
@@ -137,7 +137,8 @@ void CryptoParametersCKKSRNS::PrecomputeCRTTables(KeySwitchTechnique ksTech, Sca
                     double prevSF           = m_scalingFactorsReal[k - 1];
                     m_scalingFactorsReal[k] = prevSF * prevSF / moduliQ[sizeQ - k].ConvertToDouble();
 
-                    if (m_scalTechnique == FLEXIBLEAUTO || m_scalTechnique == FLEXIBLEAUTOEXT) {
+                    if (m_scalTechnique == FLEXIBLEAUTO || m_scalTechnique == FLEXIBLEAUTOEXT ||
+                        m_scalTechnique == FLEXIBLEMANUAL) {
                         double ratio = m_scalingFactorsReal[k] / lastPresetFactor;
                         if (ratio <= 0.5 || ratio >= 2.0) {
                             OPENFHE_THROW("FLEXIBLEAUTO scaling failed at level " + std::to_string(k) +

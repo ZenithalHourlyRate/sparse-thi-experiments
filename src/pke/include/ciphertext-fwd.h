@@ -58,11 +58,13 @@ struct seriesPowers {
     std::vector<Ciphertext<Element>> powersRe;
     std::vector<Ciphertext<Element>> powers2Re;
     Ciphertext<Element> power2km1Re;
+    std::vector<Ciphertext<Element>> auxiliaryPowersRe;
     uint32_t k;
     uint32_t m;
     std::vector<Ciphertext<Element>> powersIm;
     std::vector<Ciphertext<Element>> powers2Im;
     Ciphertext<Element> power2km1Im;
+    std::vector<Ciphertext<Element>> auxiliaryPowersIm;
 
     seriesPowers() = default;
 

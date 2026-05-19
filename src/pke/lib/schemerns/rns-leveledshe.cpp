@@ -201,7 +201,7 @@ Ciphertext<DCRTPoly> LeveledSHERNS::EvalSquare(ConstCiphertext<DCRTPoly>& cipher
     const auto cryptoParams = std::dynamic_pointer_cast<CryptoParametersRNS>(ciphertext->GetCryptoParameters());
 
     auto st = cryptoParams->GetScalingTechnique();
-    if (st == NORESCALE || st == FIXEDMANUAL || ciphertext->GetNoiseScaleDeg() == 1)
+    if (st == NORESCALE || st == FIXEDMANUAL || st == FLEXIBLEMANUAL || ciphertext->GetNoiseScaleDeg() == 1)
         return EvalSquareCore(ciphertext);
 
     size_t lvls = (st == COMPOSITESCALINGAUTO || st == COMPOSITESCALINGMANUAL) ? cryptoParams->GetCompositeDegree() :
@@ -213,7 +213,7 @@ Ciphertext<DCRTPoly> LeveledSHERNS::EvalSquareMutable(Ciphertext<DCRTPoly>& ciph
     const auto cryptoParams = std::dynamic_pointer_cast<CryptoParametersRNS>(ciphertext->GetCryptoParameters());
 
     auto st = cryptoParams->GetScalingTechnique();
-    if (st != NORESCALE && st != FIXEDMANUAL && ciphertext->GetNoiseScaleDeg() == 2) {
+    if (st != NORESCALE && st != FIXEDMANUAL && st != FLEXIBLEMANUAL && ciphertext->GetNoiseScaleDeg() == 2) {
         size_t lvls = (st == COMPOSITESCALINGAUTO || st == COMPOSITESCALINGMANUAL) ?
                           cryptoParams->GetCompositeDegree() :
                           BASE_NUM_LEVELS_TO_DROP;
@@ -316,7 +316,7 @@ Ciphertext<DCRTPoly> LeveledSHERNS::ModReduce(ConstCiphertext<DCRTPoly>& ciphert
 
 void LeveledSHERNS::ModReduceInPlace(Ciphertext<DCRTPoly>& ciphertext, size_t levels) const {
     auto st = std::dynamic_pointer_cast<CryptoParametersRNS>(ciphertext->GetCryptoParameters())->GetScalingTechnique();
-    if (st == FIXEDMANUAL)
+    if (st == FIXEDMANUAL || st == FLEXIBLEMANUAL)
         ModReduceInternalInPlace(ciphertext, levels);
 }
 
@@ -337,8 +337,8 @@ void LeveledSHERNS::LevelReduceInPlace(Ciphertext<DCRTPoly>& ciphertext, const E
                                        size_t levels) const {
     auto st = std::dynamic_pointer_cast<CryptoParametersRNS>(ciphertext->GetCryptoParameters())->GetScalingTechnique();
     if (st == NORESCALE)
-        OPENFHE_THROW("Not implemented for NORESCALE rescaling technique");
-    if (st == FIXEDMANUAL && levels > 0)
+        OPENFHE_THROW("LevelReduceInPlace is not implemented for NORESCALE rescaling technique");
+    if ((st == FIXEDMANUAL) && levels > 0)
         LevelReduceInternalInPlace(ciphertext, levels);
 }
 
