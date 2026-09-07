@@ -21,7 +21,7 @@ lbcrypto::InterpolationMethod ParseMethodName(const std::string& value) {
         {"SPARSE-THI", lbcrypto::HERMITE_SPARSE_THI}, {"SPARSE_THI", lbcrypto::HERMITE_SPARSE_THI},
         {"BKSS24", lbcrypto::HERMITE_BKSS24},         {"FULLCOMPLEX", lbcrypto::HERMITE_FULL_THI},
         {"FULL_COMPLEX", lbcrypto::HERMITE_FULL_THI}, {"FULL_THI", lbcrypto::HERMITE_FULL_THI},
-        {"FULLTHI", lbcrypto::HERMITE_FULL_THI},
+        {"FULLTHI", lbcrypto::HERMITE_FULL_THI},      {"BKSS24_NEW", lbcrypto::HERMITE_BKSS24_NEW},
     };
     auto it = kMethodMap.find(value);
     if (it == kMethodMap.end())

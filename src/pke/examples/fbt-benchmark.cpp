@@ -243,6 +243,9 @@ static std::vector<std::complex<double>> compute_coefficients(
     else if (method == lbcrypto::HERMITE_BKSS24) {
         coeffcomp = GetHermiteTrigCoefficientsBKSS(func, PInput.ConvertToInt(), scaleTHI);
     }
+    else if (method == lbcrypto::HERMITE_BKSS24_NEW) {
+        coeffcomp = GetHermiteTrigCoefficientsBKSSNew(func, PInput.ConvertToInt(), scaleTHI);
+    }
     return coeffcomp;
 }
 
@@ -272,6 +275,7 @@ double compute_threshold(bool complexLUT, InterpolationMethod method, std::funct
         switch (method) {
             case lbcrypto::HERMITE_AKP25:
             case lbcrypto::HERMITE_BKSS24:
+            case lbcrypto::HERMITE_BKSS24_NEW:
                 inputPrecThreshold = GetHermiteTrigAKPThreshold(func, PInput.ConvertToInt(), order, scaleTHI);
                 break;
             case lbcrypto::HERMITE_FULL_THI:

@@ -32,6 +32,9 @@ std::ostream& operator<<(std::ostream& s, InterpolationMethod m) {
         case HERMITE_SPARSE_THI:
             s << "Sparse THI";
             break;
+        case HERMITE_BKSS24_NEW:
+            s << "BKSS24_NEW";
+            break;
         default:
             s << "UNKNOWN";
             break;
@@ -443,12 +446,75 @@ std::vector<std::complex<double>> GetHermiteTrigCoefficientsBKSSForComplexLUT(
     coeffs.push_back(f0[0]);
     return coeffs;
 }
+
 std::vector<std::complex<double>> GetHermiteTrigCoefficientsBKSS(std::function<int64_t(int64_t)> func, uint32_t p,
                                                                  double scale) {
     auto funcComplex = [&](int64_t x) -> std::complex<double> {
         return std::complex<double>(static_cast<double>(func(x)), 0.0);
     };
     return GetHermiteTrigCoefficientsBKSSForComplexLUT(funcComplex, p, scale);
+}
+
+std::vector<std::complex<double>> GetHermiteTrigCoefficientsBKSSNew(std::function<int64_t(int64_t)> func, uint32_t p,
+                                                                    double scale) {
+    using namespace std::complex_literals;
+    auto omega = std::exp(2i * M_PI / double(p));
+
+    // Compute IDFT
+    std::vector<std::complex<double>> idft;
+    for (size_t m = 0; m != p; ++m) {
+        std::complex<double> ret = 0;
+        for (size_t ell = 0; ell != p; ++ell) {
+            ret += static_cast<double>(func(ell)) * std::pow(omega, -double(ell) * m);
+        }
+        ret /= double(p);
+        idft.push_back(ret);
+    }
+
+    std::vector<std::complex<double>> f0 = {idft[0]};
+    std::vector<std::complex<double>> Pf(p, 0);
+    std::vector<std::complex<double>> Qf(p, 0);
+    std::complex<double> rem;
+
+    for (size_t k = 1; k <= p / 2 - 1; ++k) {
+        Pf[k] = idft[k] * (double(p) - k) * (double(k) + 1) / double(p);
+        Qf[k] = idft[k] * double(k) * (double(p) - k) / double(p);
+    }
+    for (size_t k = p / 2 + 1; k < p; ++k) {
+        Pf[k] = idft[k] * (double(p) - k) / double(p);
+    }
+    Pf[p / 2] = idft[p / 2] * (double(p) / 2.0) / double(p);
+    rem       = idft[p / 2] * (double(p) / 2.0) * (double(p) / 2.0) / double(p);
+
+    // 2Re[Pf(z)] + 2Re[Qf(z)] + L_{p/2} / p * (p/2) * (p/2) * (z^{p/2}) * (1-z*conj(z))
+
+    // normalization
+    f0[0] /= scale;
+    rem /= scale;
+    for (size_t m = 0; m != p; ++m) {
+        Pf[m] /= scale;
+        Qf[m] /= scale;
+    }
+
+    // Pack them for convenience of APIs...
+    // {Pf, Pfr (0), Qf, Qfr (0), f0}
+    std::vector<std::complex<double>> coeffs;
+    coeffs.reserve(1 + 4 * p);
+    for (size_t k = 0; k < p; ++k) {
+        coeffs.push_back(Pf[k]);
+    }
+    for (size_t k = 0; k < p; ++k) {
+        coeffs.push_back(0.0);
+    }
+    coeffs[p] = rem;
+    for (size_t k = 0; k < p; ++k) {
+        coeffs.push_back(Qf[k]);
+    }
+    for (size_t k = 0; k < p; ++k) {
+        coeffs.push_back(0.0);
+    }
+    coeffs.push_back(f0[0]);
+    return coeffs;
 }
 
 }  // namespace lbcrypto

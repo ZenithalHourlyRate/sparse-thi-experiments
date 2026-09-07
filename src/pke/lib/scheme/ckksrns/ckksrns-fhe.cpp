@@ -3308,7 +3308,7 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
             OPENFHE_THROW(
                 "Complex-valued LUT evaluation is supported only for sparse packing in the pure-CKKS workflow.");
 
-        if (__interpolation_method_global == HERMITE_BKSS24) {
+        if (__interpolation_method_global == HERMITE_BKSS24 || __interpolation_method_global == HERMITE_BKSS24_NEW) {
             auto adv       = algo->CustomGetAdvancedSHE();
             auto ckksAdv   = std::dynamic_pointer_cast<AdvancedSHECKKSRNS>(adv);
             auto totalSize = coefficients.size();
@@ -3452,7 +3452,7 @@ std::shared_ptr<seriesPowers<DCRTPoly>> FHECKKSRNS::EvalMVBPrecomputeInternal(
 
         __debug(ctxtEnc[0], "Exp");
 
-        if (__interpolation_method_global == HERMITE_BKSS24) {
+        if (__interpolation_method_global == HERMITE_BKSS24 || __interpolation_method_global == HERMITE_BKSS24_NEW) {
             auto adv       = algo->CustomGetAdvancedSHE();
             auto ckksAdv   = std::dynamic_pointer_cast<AdvancedSHECKKSRNS>(adv);
             auto totalSize = coefficients.size();
@@ -3521,6 +3521,55 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalMVBNoDecodingInternal(const std::shared_ptr
                                   IsComplexLUTSparseTHICoefficientLayout(coefficients.size(), digitBitSize, order);
 
     Ciphertext<DCRTPoly> ctxtEnc;
+
+    auto evalBKSS24RealWithPrecomp = [&](const std::shared_ptr<seriesPowers<DCRTPoly>>& ctxtPowersSingle) {
+        auto adv       = algo->CustomGetAdvancedSHE();
+        auto ckksAdv   = std::dynamic_pointer_cast<AdvancedSHECKKSRNS>(adv);
+        auto totalSize = coefficients.size();
+        auto p         = (totalSize - 1) / 4;
+
+        std::vector<std::complex<double>> Pf(p);
+        std::vector<std::complex<double>> Qf(p);
+        std::complex<double> f0  = coefficients[4 * p];
+        std::complex<double> rem = coefficients[p];
+        for (size_t i = 0; i != p; ++i) {
+            Pf[i] = coefficients[i];
+            Qf[i] = coefficients[2 * p + i];
+        }
+
+        auto Pfx = ckksAdv->EvalPolyBSGSWithPrecomp(ctxtPowersSingle, Pf);
+        auto Qfx = ckksAdv->EvalPolyBSGSWithPrecomp(ctxtPowersSingle, Qf);
+
+        auto Pfrx = Conjugate(Pfx, cc->GetEvalAutomorphismKeyMap(Pfx->GetKeyTag()));
+        auto Qfrx = Conjugate(Qfx, cc->GetEvalAutomorphismKeyMap(Qfx->GetKeyTag()));
+
+        auto Pfxx = cc->EvalAdd(Pfx, Pfrx);
+        cc->EvalAddInPlace(Pfxx, f0);
+
+        auto x      = ctxtPowersSingle->powersRe[0];
+        auto x_conj = Conjugate(x, cc->GetEvalAutomorphismKeyMap(x->GetKeyTag()));
+        auto negzz  = cc->EvalMult(x, x_conj);
+        cc->EvalNegateInPlace(negzz);
+        algo->ModReduceInPlace(negzz, 1);
+        auto negzzAddOne = cc->EvalAdd(negzz, 1.0);
+
+        auto Qfxx = cc->EvalAdd(Qfx, Qfrx);
+        if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL)
+            algo->AdjustLevelsAndDepthInPlace(negzz, Qfxx);
+        auto qterm = cc->EvalMult(Qfxx, negzz);
+        algo->ModReduceInPlace(qterm, 1);
+
+        // rem term
+        // get z^{p/2}
+        auto zp2     = ctxtPowersSingle->powers2Re[ctxtPowersSingle->powers2Re.size() - 1];
+        auto remTerm = cc->EvalMult(zp2, rem);
+        algo->ModReduceInPlace(remTerm, 1);
+        if (cryptoParams->GetScalingTechnique() != FIXEDMANUAL)
+            algo->AdjustLevelsAndDepthInPlace(negzzAddOne, remTerm);
+        remTerm = cc->EvalMult(remTerm, negzzAddOne);
+        algo->ModReduceInPlace(remTerm, 1);
+        return cc->EvalAdd(cc->EvalAdd(Pfxx, qterm), remTerm);
+    };
 
     auto evalBKSS24WithPrecomp = [&](const std::shared_ptr<seriesPowers<DCRTPoly>>& ctxtPowersSingle) {
         auto adv       = algo->CustomGetAdvancedSHE();
@@ -3669,6 +3718,10 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalMVBNoDecodingInternal(const std::shared_ptr
                 ctxtEnc  = evalBKSS24WithPrecomp(ctxtPowersRe);
                 ctxtEncI = evalBKSS24WithPrecomp(ctxtPowersIm);
             }
+            else if (__interpolation_method_global == HERMITE_BKSS24_NEW) {
+                ctxtEnc  = evalBKSS24RealWithPrecomp(ctxtPowersRe);
+                ctxtEncI = evalBKSS24RealWithPrecomp(ctxtPowersIm);
+            }
             else if (__interpolation_method_global == HERMITE_SPARSE_THI) {
                 if (ciphertexts->auxiliaryPowersRe.empty() || ciphertexts->auxiliaryPowersIm.empty())
                     OPENFHE_THROW("Missing SPARSE_THI auxiliary powers for full packing.");
@@ -3725,6 +3778,12 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalMVBNoDecodingInternal(const std::shared_ptr
                                                              ciphertexts->power2km1Re, ciphertexts->k, ciphertexts->m);
 
                 ctxtEnc = evalBKSS24WithPrecomp(ctxtPowersRe);
+            }
+            else if (__interpolation_method_global == HERMITE_BKSS24_NEW) {
+                auto ctxtPowersRe =
+                    std::make_shared<seriesPowers<DCRTPoly>>(ciphertexts->powersRe, ciphertexts->powers2Re,
+                                                             ciphertexts->power2km1Re, ciphertexts->k, ciphertexts->m);
+                ctxtEnc = evalBKSS24RealWithPrecomp(ctxtPowersRe);
             }
             else if (__interpolation_method_global == HERMITE_SPARSE_THI) {
                 auto pInput           = GetPInputFromDigitBitSize(digitBitSize);
@@ -3972,7 +4031,7 @@ uint32_t FHECKKSRNS::AdjustDepthFBT(const std::vector<VectorDataType>& coefficie
             break;
         default:
             depth += GetMultiplicativeDepthByCoeffVector(coeff_exp, false);
-            if (interpolationMethod == HERMITE_BKSS24) {
+            if (interpolationMethod == HERMITE_BKSS24 || interpolationMethod == HERMITE_BKSS24_NEW) {
                 auto totalSize = coefficients.size();
                 auto p         = (totalSize - 1) / 4;
                 depth +=
